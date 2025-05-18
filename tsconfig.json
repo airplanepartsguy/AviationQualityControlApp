@@ -1,6 +1,8 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    "jsx": "react-native", // Explicitly set JSX mode
+    "skipLibCheck": true // Skip type checking of declaration files
   }
 }

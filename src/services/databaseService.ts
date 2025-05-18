@@ -1,0 +1,364 @@
+import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system';
+import { PhotoBatch, PhotoData, PhotoMetadata, AnnotationData } from '../types/data';
+
+const DB_NAME = 'QualityControl.db';
+let db: SQLite.SQLiteDatabase | null = null;
+
+// --- Database Initialization ---
+export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
+  if (!db) {
+    try {
+      console.log('[databaseService] Opening database...');
+      db = await SQLite.openDatabaseAsync(DB_NAME);
+      console.log('[databaseService] Database opened successfully.');
+      await initializeDatabase(db);
+    } catch (error) {
+      console.error('[databaseService] Failed to open or initialize database:', error);
+      throw error; // Rethrow to indicate failure
+    }
+  }
+  return db;
+};
+
+const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void> => {
+  console.log('[databaseService] Initializing database tables...');
+  try {
+    await database.execAsync(`
+      PRAGMA journal_mode = WAL;
+
+      CREATE TABLE IF NOT EXISTS photo_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orderNumber TEXT,
+        inventoryId TEXT,
+        userId TEXT NOT NULL,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        status TEXT DEFAULT 'pending' -- pending, completed, synced
+      );
+
+      CREATE TABLE IF NOT EXISTS photos (
+        id TEXT PRIMARY KEY, -- Use photoData.id (UUID or timestamp-based)
+        batchId INTEGER NOT NULL,
+        partNumber TEXT, -- Added part number
+        uri TEXT NOT NULL,
+        metadataJson TEXT NOT NULL, -- Store PhotoMetadata as JSON string
+        annotationsJson TEXT, -- Store AnnotationData[] as JSON string
+        FOREIGN KEY (batchId) REFERENCES photo_batches (id) ON DELETE CASCADE
+      );
+
+      -- TODO: Consider adding indexes for frequently queried columns (e.g., batchId, status)
+      CREATE INDEX IF NOT EXISTS idx_photos_batchId ON photos(batchId);
+      CREATE INDEX IF NOT EXISTS idx_batches_status ON photo_batches(status);
+    `);
+    console.log('[databaseService] Database tables initialized successfully.');
+  } catch (error) {
+    console.error('[databaseService] Error initializing database tables:', error);
+    throw error;
+  }
+};
+
+// --- Batch Operations ---
+
+// Create a new batch record and return its ID
+export const createPhotoBatch = async (
+  userId: string,
+  orderNumber?: string,
+  inventoryId?: string
+): Promise<number> => {
+  const database = await openDatabase();
+  try {
+    const result = await database.runAsync(
+      'INSERT INTO photo_batches (userId, orderNumber, inventoryId) VALUES (?, ?, ?)',
+      [userId, orderNumber ?? null, inventoryId ?? null]
+    );
+    if (result.lastInsertRowId === undefined) {
+        throw new Error('Failed to get last insert row ID for photo batch.');
+    }
+    console.log(`[databaseService] Created photo batch with ID: ${result.lastInsertRowId}`);
+    return result.lastInsertRowId;
+  } catch (error) {
+    console.error('[databaseService] Error creating photo batch:', error);
+    throw error;
+  }
+};
+
+// Retrieve a specific batch by ID (optional)
+export const getPhotoBatchById = async (batchId: number): Promise<PhotoBatch | null> => {
+  const database = await openDatabase();
+  try {
+    const batchRow = await database.getFirstAsync<any>(
+      'SELECT * FROM photo_batches WHERE id = ?',
+      [batchId]
+    );
+    if (!batchRow) return null;
+
+    // Retrieve associated photos
+    const photos = await getPhotosByBatchId(batchId);
+
+    return {
+      id: batchRow.id,
+      orderNumber: batchRow.orderNumber,
+      inventoryId: batchRow.inventoryId,
+      userId: batchRow.userId,
+      createdAt: batchRow.createdAt,
+      status: batchRow.status,
+      photos: photos, // Embed photos directly
+    };
+  } catch (error) {
+    console.error(`[databaseService] Error getting photo batch ${batchId}:`, error);
+    throw error;
+  }
+};
+
+// Retrieve all batches with a specific status (e.g., 'pending')
+export const getPhotoBatchesByStatus = async (status: string): Promise<PhotoBatch[]> => {
+    const database = await openDatabase();
+    try {
+        const batchRows = await database.getAllAsync<any>(
+            'SELECT * FROM photo_batches WHERE status = ? ORDER BY createdAt DESC',
+            [status]
+        );
+
+        const batches: PhotoBatch[] = [];
+        for (const row of batchRows) {
+            // Optionally fetch photos for each batch here if needed immediately,
+            // or fetch them on demand when a batch is selected.
+            // For simplicity, let's fetch them here for now.
+            const photos = await getPhotosByBatchId(row.id);
+            batches.push({
+                id: row.id,
+                orderNumber: row.orderNumber,
+                inventoryId: row.inventoryId,
+                userId: row.userId,
+                createdAt: row.createdAt,
+                status: row.status,
+                photos: photos,
+            });
+        }
+        return batches;
+    } catch (error) {
+        console.error(`[databaseService] Error getting batches with status ${status}:`, error);
+        throw error;
+    }
+};
+
+// Update batch status
+export const updateBatchStatus = async (batchId: number, status: 'pending' | 'completed' | 'synced'): Promise<void> => {
+  const database = await openDatabase();
+  try {
+    await database.runAsync('UPDATE photo_batches SET status = ? WHERE id = ?', [status, batchId]);
+    console.log(`[databaseService] Updated status for batch ${batchId} to ${status}`);
+  } catch (error) {
+    console.error(`[databaseService] Error updating status for batch ${batchId}:`, error);
+    throw error;
+  }
+};
+
+// Delete a batch and its associated photos (and files)
+export const deletePhotoBatch = async (batchId: number): Promise<void> => {
+  const database = await openDatabase();
+  try {
+    // 1. Get photos associated with the batch to delete files
+    const photosToDelete = await getPhotosByBatchId(batchId);
+
+    // 2. Begin transaction
+    await database.runAsync('BEGIN TRANSACTION;');
+
+    // 3. Delete photos from the database
+    await database.runAsync('DELETE FROM photos WHERE batchId = ?', [batchId]);
+
+    // 4. Delete the batch record
+    await database.runAsync('DELETE FROM photo_batches WHERE id = ?', [batchId]);
+
+    // 5. Commit transaction
+    await database.runAsync('COMMIT;');
+    console.log(`[databaseService] Deleted batch ${batchId} and associated photo records.`);
+
+    // 6. Delete actual photo files (outside transaction)
+    for (const photo of photosToDelete) {
+      try {
+        await FileSystem.deleteAsync(photo.uri, { idempotent: true });
+        console.log(`[databaseService] Deleted photo file: ${photo.uri}`);
+      } catch (fileError) {
+        console.error(`[databaseService] Error deleting photo file ${photo.uri}:`, fileError);
+        // Decide if this should halt the process or just log
+      }
+    }
+
+  } catch (error) {
+    console.error(`[databaseService] Error deleting batch ${batchId}:`, error);
+    // Rollback if transaction was started and failed
+    try { await database.runAsync('ROLLBACK;'); } catch (rollbackError) { /* ignore */ }
+    throw error;
+  }
+};
+
+// --- Photo Operations ---
+
+// Save a single photo linked to a batch
+export const savePhoto = async (batchId: number, photoData: PhotoData): Promise<void> => {
+  const database = await openDatabase();
+  try {
+    // Ensure URI is valid and file exists before saving DB record
+    const fileInfo = await FileSystem.getInfoAsync(photoData.uri);
+    if (!fileInfo.exists) {
+        throw new Error(`Photo file does not exist at URI: ${photoData.uri}`);
+    }
+
+    const metadataJson = JSON.stringify(photoData.metadata);
+    const annotationsJson = photoData.annotations ? JSON.stringify(photoData.annotations) : null;
+
+    await database.runAsync(
+      'INSERT INTO photos (id, batchId, partNumber, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?)',
+      [photoData.id, batchId, photoData.partNumber, photoData.uri, metadataJson, annotationsJson]
+    );
+    console.log(`[databaseService] Saved photo ${photoData.id} for batch ${batchId}`);
+  } catch (error) {
+    console.error(`[databaseService] Error saving photo ${photoData.id} for batch ${batchId}:`, error);
+    throw error;
+  }
+};
+
+// Retrieve all photos for a specific batch ID
+export const getPhotosByBatchId = async (batchId: number): Promise<PhotoData[]> => {
+  const database = await openDatabase();
+  try {
+    const photoRows = await database.getAllAsync<any>(
+      'SELECT * FROM photos WHERE batchId = ?',
+      [batchId]
+    );
+
+    return photoRows.map((row: { id: string; uri: string; metadataJson: string; annotationsJson: string | null }) => ({
+      id: row.id,
+      uri: row.uri,
+      // partNumber is now within metadata, parse it out if needed where used
+      // For simplicity, we reconstruct based on metadata here if required by PhotoData type
+      partNumber: JSON.parse(row.metadataJson).partNumber || 'N/A', 
+      metadata: JSON.parse(row.metadataJson) as PhotoMetadata,
+      annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) as AnnotationData[] : undefined,
+    }));
+  } catch (error) {
+    console.error(`[databaseService] Error getting photos for batch ${batchId}:`, error);
+    throw error;
+  }
+};
+
+// Update photo metadata (e.g., after adding annotations)
+export const updatePhotoMetadata = async (photoId: string, metadata: PhotoMetadata, annotations?: AnnotationData[]): Promise<void> => {
+  const database = await openDatabase();
+  try {
+    const metadataJson = JSON.stringify(metadata);
+    const annotationsJson = annotations ? JSON.stringify(annotations) : null;
+    await database.runAsync(
+      'UPDATE photos SET metadataJson = ?, annotationsJson = ? WHERE id = ?',
+      [metadataJson, annotationsJson, photoId]
+    );
+    console.log(`[databaseService] Updated metadata/annotations for photo ${photoId}`);
+  } catch (error) {
+    console.error(`[databaseService] Error updating metadata for photo ${photoId}:`, error);
+    throw error;
+  }
+};
+
+// Delete a single photo record and its file
+export const deletePhotoById = async (photoId: string): Promise<void> => {
+  const database = await openDatabase();
+  try {
+    // 1. Get the photo URI before deleting the record
+    const photoRow = await database.getFirstAsync<any>(
+      'SELECT uri FROM photos WHERE id = ?',
+      [photoId]
+    );
+
+    if (!photoRow) {
+      console.warn(`[databaseService] Photo record ${photoId} not found for deletion.`);
+      return; // Or throw error?
+    }
+
+    // 2. Delete the database record
+    await database.runAsync('DELETE FROM photos WHERE id = ?', [photoId]);
+    console.log(`[databaseService] Deleted photo record ${photoId}.`);
+
+    // 3. Delete the actual photo file
+    try {
+      await FileSystem.deleteAsync(photoRow.uri, { idempotent: true });
+      console.log(`[databaseService] Deleted photo file: ${photoRow.uri}`);
+    } catch (fileError) {
+      console.error(`[databaseService] Error deleting photo file ${photoRow.uri}:`, fileError);
+      // Decide if this should be re-thrown
+    }
+
+  } catch (error) {
+    console.error(`[databaseService] Error deleting photo ${photoId}:`, error);
+    throw error;
+  }
+};
+
+// --- Utility ---
+
+// Close the database connection (optional, usually managed by Expo)
+export const closeDatabase = async (): Promise<void> => {
+  if (db) {
+    try {
+      await db.closeAsync();
+      db = null;
+      console.log('[databaseService] Database closed.');
+    } catch (error) {
+      console.error('[databaseService] Error closing database:', error);
+    }
+  }
+};
+
+// Helper function to ensure the database is open and return the instance
+export const ensureDbOpen = async (): Promise<SQLite.SQLiteDatabase> => {
+  return await openDatabase();
+};
+
+// Fetches all photos associated with a specific batch ID
+export const getPhotosForBatch = async (batchId: number): Promise<PhotoData[]> => {
+  const db = await openDatabase();
+  // Define an interface for the row structure coming from the DB
+  // Reflects the actual columns in the 'photos' table
+  interface PhotoRow {
+      id: string;
+      batchId: number;
+      partNumber?: string; // Added partNumber, make optional if it can be null
+      uri: string;
+      metadataJson: string;
+      annotationsJson?: string;
+      // Add other fields from the photos table if necessary
+  }
+  const results = await db.getAllAsync<PhotoRow>(
+    'SELECT * FROM photos WHERE batchId = ? ORDER BY createdAt ASC',
+    [batchId]
+  );
+  // Manually parse metadata back into an object
+  return results.map((row: PhotoRow) => ({
+    ...row,
+    partNumber: row.partNumber || '', // Provide default or handle potential null
+    metadata: JSON.parse(row.metadataJson || '{}'), // Ensure metadata is parsed from JSON string
+    annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined // Parse annotations if they exist
+  }));
+};
+
+// Fetches batch details and all associated photos
+export const getBatchDetails = async (batchId: number): Promise<{ batch: PhotoBatch | null; photos: PhotoData[] }> => {
+  const db = await openDatabase();
+  const batch = await db.getFirstAsync<PhotoBatch>('SELECT * FROM photo_batches WHERE id = ?', [batchId]);
+  const photos = await getPhotosForBatch(batchId); // Reuse existing function
+  return { batch, photos };
+};
+
+// Deletes a batch and all associated photos
+export const deleteBatch = async (batchId: number): Promise<void> => {
+  const db = await openDatabase();
+  // Optional: Delete associated photo files first
+  // const photos = await getPhotosForBatch(batchId);
+  // for (const photo of photos) { try { await FileSystem.deleteAsync(photo.uri); } catch (e) { console.error("Error deleting photo file:", e); } }
+  await db.runAsync('DELETE FROM photos WHERE batchId = ?', [batchId]);
+  await db.runAsync('DELETE FROM photo_batches WHERE id = ?', [batchId]);
+  console.log(`Batch ${batchId} and associated photos deleted successfully.`);
+  // TODO: Add analytics log for batch deletion
+};
+
+export { db }; // Export db instance if needed elsewhere, though encapsulation is preferred
