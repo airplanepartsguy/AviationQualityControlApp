@@ -1,458 +1,720 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
-  Image,
   Alert,
   SafeAreaView,
+  ActivityIndicator,
   StatusBar,
-  ActivityIndicator
+  TouchableOpacity,
+  TextInput,
+  Platform,
+  Share
 } from 'react-native';
-import { PDFGenerationScreenProps } from '../types/navigation';
-import CustomButton from '../components/CustomButton';
+import { StackScreenProps } from '@react-navigation/stack';
+import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
-import { Ionicons } from '@expo/vector-icons';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../styles/theme';
-import { logErrorToFile } from '../services/analyticsService'; // Corrected import path
-import { mockSyncToErp } from '../services/erpService'; // Corrected import name
+import * as ImageManipulator from 'expo-image-manipulator';
+
+import { RootStackParamList } from '../types/navigation';
+import { COLORS, FONTS, SPACING } from '../styles/theme';
 import { PhotoData } from '../types/data';
 
+// Update the PhotoData type to include isDefect property
+declare module '../types/data' {
+  interface PhotoData {
+    isDefect?: boolean;
+  }
+}
+
+// Add custom property to global for filename tracking
+declare global {
+  interface Window {
+    customPdfFilename?: string;
+  }
+}
+import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService';
+import * as databaseService from '../services/databaseService';
+
+type PDFGenerationScreenProps = StackScreenProps<RootStackParamList, 'PDFGeneration'>;
+
+// Extend the navigation params to include pictureType
+declare module '../types/navigation' {
+  // Extending existing interface, not redefining it
+  interface RootStackParamList {
+    PDFGeneration: {
+      batchId: number;
+      reportType?: 'order' | 'inventory';
+      orderNumber?: string;
+      inventorySessionId?: string;
+      pictureType?: 'Pictures' | 'Defect Pictures';
+    };
+  }
+}
+
+// Type for PDF file naming options
+type PictureType = 'Pictures' | 'Defect Pictures';
+
 const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) => {
-  const [isLoading, setIsLoading] = useState(false);
-  const [pdfUri, setPdfUri] = useState<string | null>(null);
+  // Extract parameters from route
+  const { batchId, reportType: routeReportType, orderNumber: routeOrderNumber, inventorySessionId: routeInventorySessionId, pictureType: routePictureType } = route.params;
+  
+  // State variables
+  const [isLoading, setIsLoading] = useState(true);
+  const [progressMessage, setProgressMessage] = useState('Loading batch details...');
+  const [progressPercent, setProgressPercent] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [pdfUri, setPdfUri] = useState<string | null>(null);
+  const [pictureType, setPictureType] = useState<PictureType>(routePictureType || 'Pictures');
+  const [showPictureTypeModal, setShowPictureTypeModal] = useState<boolean>(!routePictureType);
+  const [notes, setNotes] = useState<string>('');
+  const [showNotesInput, setShowNotesInput] = useState<boolean>(false);
+  
+  // Reference to track if component is mounted
+  const isMounted = useRef(true);
+  
+  // Context identifier for the PDF
+  const contextIdentifier = routeOrderNumber || routeInventorySessionId || `Batch-${batchId}`;
+  
+  // Generate a filename for the PDF based on the record ID, picture type, and optional notes
+  const generateFileName = (recordId: string, type: PictureType, userNotes?: string): string => {
+    // Trim and limit notes to 30 characters
+    const trimmedNotes = userNotes?.trim();
+    const limitedNotes = trimmedNotes && trimmedNotes.length > 0 
+      ? ` - ${trimmedNotes.substring(0, 30)}` 
+      : '';
+    
+    return `${recordId} - ${type}${limitedNotes}.pdf`;
+  };
 
-  // Correctly destructure params based on updated RootStackParamList
-  const { photos, reportType, orderNumber, inventorySessionId, userId } = route.params;
-
-  const contextIdentifier = orderNumber || inventorySessionId || 'UnknownContext';
-
-  const generatePdfContent = async (): Promise<string> => {
-    let contentHtml = '';
-
-    if (reportType === 'simple') {
-      // Generate simple image list
-      for (const photo of photos) {
-        let imageBase64 = '';
-
-        try {
-          const imageInfo = await FileSystem.getInfoAsync(photo.uri);
-          if (imageInfo.exists) {
-            imageBase64 = await FileSystem.readAsStringAsync(photo.uri, { encoding: FileSystem.EncodingType.Base64 });
-          } else {
-            console.warn(`[PDFGenerationScreen] Image file not found: ${photo.uri}`);
-          }
-        } catch (e) {
-          console.error(`[PDFGenerationScreen] Failed to read image file: ${photo.uri}`, e);
-          await logErrorToFile(`[PDFGenerationScreen] Failed to read image ${photo.uri}`, e instanceof Error ? e : new Error(String(e)));
-        }
-        contentHtml += `
-          <div class="simple-photo-item">
-            <img src="data:image/jpeg;base64,${imageBase64}" />
-          </div>
-        `;
-      }
-      // Return simple HTML structure
-      return `
-        <html>
-          <head>
-            <style>
-              body { margin: 0; padding: 0; }
-              .simple-photo-item { 
-                page-break-after: always; /* Ensure each image starts on a new page */
-                width: 100%; 
-                height: 100vh; /* Try to fill the page height */
-                display: flex; 
-                justify-content: center; 
-                align-items: center; 
-                overflow: hidden; /* Prevent image overflow */
-              }
-              .simple-photo-item img { 
-                max-width: 100%; 
-                max-height: 100vh; /* Fit image within viewport height */
-                object-fit: contain; /* Scale image while preserving aspect ratio */
-              }
-              /* Hide the last page break */
-              .simple-photo-item:last-child { page-break-after: auto; }
-            </style>
-          </head>
-          <body>${contentHtml}</body>
-        </html>
-      `;
-    } else {
-      // Generate detailed defect report (existing logic)
-      for (const photo of photos) {
-        let imageBase64 = '';
-
-        try {
-          const imageInfo = await FileSystem.getInfoAsync(photo.uri);
-          if (imageInfo.exists) {
-            imageBase64 = await FileSystem.readAsStringAsync(photo.uri, { encoding: FileSystem.EncodingType.Base64 });
-          } else {
-            console.warn(`[PDFGenerationScreen] Image file not found: ${photo.uri}`);
-          }
-        } catch (e) {
-          console.error(`[PDFGenerationScreen] Failed to read image file: ${photo.uri}`, e);
-          await logErrorToFile(`[PDFGenerationScreen] Failed to read image ${photo.uri}`, e instanceof Error ? e : new Error(String(e)));
-        }
-
-        // Detailed photo item HTML
-        contentHtml += `
-          <div class="detailed-photo-item">
-            <h3>Photo ID: ${photo.id} (Part: ${photo.metadata.partNumber || 'N/A'})</h3>
-            <div class="image-container">
-              <img src="data:image/jpeg;base64,${imageBase64}" />
-              ${photo.metadata.annotationUri ? `<img src="${photo.metadata.annotationUri}" class="annotation-overlay" />` : ''}
-            </div>
-            <div class="metadata">
-              <p><strong>Timestamp:</strong> ${new Date(photo.metadata.timestamp).toLocaleString()}</p>
-              <p><strong>User ID:</strong> ${photo.metadata.userId}</p>
-              <p><strong>Defects Marked:</strong> ${photo.metadata.hasDefects ? 'Yes' : 'No'}${photo.metadata.defectNotes ? ` - Notes: ${photo.metadata.defectNotes}` : ''}</p>
-            </div>
-          </div>
-        `;
-      }
-
-      // Return detailed HTML structure
-      return `
-        <html>
-          <head>
-            <style>
-              body { font-family: sans-serif; margin: 20px; }
-              h1 { text-align: center; color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-              .summary { margin-bottom: 20px; padding: 10px; background-color: #f9f9f9; border: 1px solid #eee; page-break-after: avoid; }
-              .detailed-photo-item { 
-                border: 1px solid #ccc; 
-                margin-bottom: 20px; 
-                padding: 15px; 
-                page-break-inside: avoid; /* Crucial: Prevent item from splitting across pages */
-                background-color: #fff; /* Ensure background for visibility */
-              }
-              .image-container { 
-                position: relative; 
-                max-width: 100%; 
-                margin-bottom: 10px; 
-                border: 1px solid #eee; 
-                display: inline-block; /* Helps with page-break control */
-              }
-              .image-container img { 
-                display: block; /* Prevents extra space below image */
-                max-width: 100%; 
-                height: auto; /* Maintain aspect ratio */
-              }
-              .annotation-overlay {
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                pointer-events: none; /* Allows interaction with underlying image if needed */
-              }
-              .metadata p { margin: 5px 0; font-size: 0.9em; color: #555; }
-              .metadata strong { color: #000; }
-            </style>
-          </head>
-          <body>
-            <h1>Quality Control Report</h1>
-            <div class="summary">
-              <h2>Summary</h2>
-              <p><strong>Context:</strong> ${orderNumber || inventorySessionId || 'Unknown Context'}</p>
-              <p><strong>Generated By:</strong> User ${userId}</p>
-              <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
-              <p><strong>Total Photos:</strong> ${photos.length}</p>
-            </div>
-            ${contentHtml}
-          </body>
-        </html>
-      `;
+  // Cleanup function to remove temporary files
+  const cleanupTempFiles = async () => {
+    try {
+      const tempDir = `${FileSystem.cacheDirectory}temp/`;
+      await FileSystem.deleteAsync(tempDir, { idempotent: true });
+      console.log('Temp directory cleaned up successfully');
+    } catch (error) {
+      console.error('Error cleaning up temp files:', error);
     }
   };
 
-  // Generate PDF effect
-  useEffect(() => {
-    const createPdf = async () => {
-      if (photos.length === 0) {
-        Alert.alert("Error", "No photos available to generate PDF.");
-        navigation.goBack();
-        return;
+  // Convert a single photo to base64 data URL
+  const convertPhotoToBase64 = async (photo: PhotoData): Promise<string> => {
+    try {
+      console.log(`Converting photo to base64: ${photo.uri}`);
+      
+      // Check if the source file exists
+      const fileInfo = await FileSystem.getInfoAsync(photo.uri);
+      if (!fileInfo.exists) {
+        throw new Error(`Source image file not found: ${photo.uri}`);
       }
-      setIsLoading(true);
+      
+      // Compress and resize the image to make it more manageable
+      const compressedImage = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 1000 } }], // Smaller size for better performance
+        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      
+      // Convert the image to base64
+      const base64 = await FileSystem.readAsStringAsync(compressedImage.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      
+      return `data:image/jpeg;base64,${base64}`;
+    } catch (error) {
+      console.error(`Error converting photo to base64:`, error);
+      throw error;
+    }
+  };
+  
+  // Process all photos and convert them to base64 data URLs
+  const processAllPhotos = async (photos: PhotoData[]): Promise<string[]> => {
+    const processedImages: string[] = [];
+    
+    // Process one image at a time to avoid memory issues
+    for (let i = 0; i < photos.length; i++) {
       try {
-        const pdfFilename = `Report_${contextIdentifier}_${new Date().toISOString().split('T')[0]}.pdf`;
-        const pdfDirectory = `${FileSystem.documentDirectory}pdf_reports/`;
-        const targetPdfPath = `${pdfDirectory}${pdfFilename}`;
+        setProgressMessage(`Processing image ${i+1} of ${photos.length}...`);
+        setProgressPercent(Math.floor(30 + (i / photos.length * 40)));
+        
+        const base64Image = await convertPhotoToBase64(photos[i]);
+        processedImages.push(base64Image);
+        
+        console.log(`Successfully processed image ${i+1} of ${photos.length}`);
+      } catch (error) {
+        console.error(`Error processing image ${i+1}:`, error);
+        // Continue with other images even if one fails
+      }
+    }
+    
+    return processedImages;
+  };
 
-        await FileSystem.makeDirectoryAsync(pdfDirectory, { intermediates: true });
+  // Function to create PDF from images - using data URLs for reliable rendering
+  const createPdf = async (dataUrls: string[]): Promise<string | null> => {
+    try {
+      console.log('Creating PDF with images:', dataUrls.length);
+      
+      // Generate the filename based on record ID, picture type, and notes
+      const fileName = generateFileName(contextIdentifier, pictureType, notes);
+      console.log(`Using filename: ${fileName}`);
+      
+      // Store the filename in a global variable for sharing
+      if (typeof window !== 'undefined') {
+        window.customPdfFilename = fileName;
+      }
+      
+      // Create HTML content with images and a VERY PROMINENT filename header on EVERY page
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${fileName}</title>
+          <style>
+            body, html {
+              margin: 0;
+              padding: 0;
+              width: 100%;
+              height: 100%;
+            }
+            .page {
+              page-break-after: always;
+              page-break-inside: avoid;
+              width: 100%;
+              height: 100vh;
+              display: flex;
+              flex-direction: column;
+              position: relative;
+            }
+            .header {
+              width: 100%;
+              background-color: #f0f0f0;
+              padding: 15px;
+              text-align: center;
+              border-bottom: 1px solid #ccc;
+              font-family: Arial, sans-serif;
+              font-size: 16px;
+              font-weight: bold;
+              color: #333;
+            }
+            .image-container {
+              flex: 1;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+            }
+            .image {
+              max-width: 100%;
+              max-height: 100%;
+              display: block;
+            }
+            /* Last page should not have a page break after it */
+            .page:last-child {
+              page-break-after: auto;
+            }
+          </style>
+        </head>
+        <body>
+          ${dataUrls.map((dataUrl, index) => `
+            <div class="page">
+              <div class="header">${fileName}</div>
+              <div class="image-container">
+                <img class="image" src="${dataUrl}" alt="Image ${index+1}" />
+              </div>
+            </div>
+          `).join('')}
+        </body>
+        </html>
+      `;
+      
+      // For debugging
+      console.log('HTML content length:', htmlContent.length);
+      console.log('First 100 chars of HTML:', htmlContent.substring(0, 100));
+      
+      // Create the PDF directly in the cache directory
+      const { uri } = await Print.printToFileAsync({
+        html: htmlContent,
+        width: 612, // 8.5 inches at 72 PPI
+        height: 792, // 11 inches at 72 PPI
+      });
+      
+      console.log('PDF created successfully at:', uri);
+      return uri;
+    } catch (error) {
+      console.error('Error creating PDF:', error);
+      throw error;
+    }
+  };
 
-        console.log("[PDFGenerationScreen] Generating HTML content...");
-        const html = await generatePdfContent();
-        console.log(`[PDFGenerationScreen] Generating ${reportType} PDF file at ${targetPdfPath}...`);
-        const { uri: tempUri } = await Print.printToFileAsync({ html: html, width: 612, height: 792 });
-        console.log(`[PDFGenerationScreen] Moving PDF from ${tempUri} to ${targetPdfPath}`);
-        await FileSystem.moveAsync({ from: tempUri, to: targetPdfPath });
-        console.log(`[PDFGenerationScreen] PDF generated and saved to: ${targetPdfPath}`);
-        setPdfUri(targetPdfPath);
-      } catch (err) {
-        console.error("[PDFGenerationScreen] Failed to generate PDF:", err);
-        await logErrorToFile(`[PDFGenerationScreen] PDF generation failed`, err instanceof Error ? err : new Error(String(err)));
-        Alert.alert("PDF Generation Failed", "Could not create the PDF report.");
-        navigation.goBack();
-      } finally {
+  // Function to open the PDF with a custom filename
+  const openPdf = async (pdfUri: string) => {
+    try {
+      // Get our custom filename
+      const customName = typeof window !== 'undefined' ? window.customPdfFilename : null;
+      const displayName = customName || generateFileName(contextIdentifier, pictureType, notes);
+      
+      console.log(`Preparing to share PDF: ${pdfUri} with name: ${displayName}`);
+      
+      // Try using React Native's Share API which might handle filenames better
+      // First, make sure the URI is properly formatted for sharing
+      const fileUri = Platform.OS === 'android' ? pdfUri : pdfUri.replace('file://', '');
+      
+      // Use React Native's Share API
+      const result = await Share.share({
+        title: displayName,
+        message: displayName, // Used as the filename on some platforms
+        url: Platform.OS === 'ios' ? fileUri : `file://${fileUri}`,
+      }, {
+        subject: displayName, // Used for email subject
+        dialogTitle: `Share ${displayName}`,
+        // On Android, we can specify where to place the file
+        excludedActivityTypes: Platform.OS === 'ios' ? [] : undefined,
+      });
+      
+      console.log(`PDF shared with result:`, result);
+      
+      // Show a helpful message about the PDF
+      if (result.action !== Share.dismissedAction) {
+        setTimeout(() => {
+          Alert.alert(
+            'PDF Shared',
+            `Your PDF "${displayName}" has been shared successfully.`,
+            [{ text: 'OK' }]
+          );
+        }, 1000);
+      }
+    } catch (error) {
+      console.error('Error opening PDF:', error);
+      Alert.alert('Error', 'Could not open the PDF file');
+    }
+  };
+
+  // Main function to generate PDF with a simpler approach
+  const generatePdf = async (photos: PhotoData[]) => {
+    try {
+      console.log(`Starting PDF generation with ${photos.length} photos`);
+      
+      if (photos.length === 0) {
+        throw new Error('No photos available to generate PDF');
+      }
+      
+      // Process images one by one to avoid memory issues
+      setProgressMessage(`Processing ${photos.length} images...`);
+      setProgressPercent(30);
+      
+      // Log the first photo URI for debugging
+      console.log('First photo URI:', photos[0].uri);
+      
+      // Process all photos to base64 data URLs
+      const processedImages = await processAllPhotos(photos);
+      
+      if (processedImages.length === 0) {
+        throw new Error('Failed to process any images');
+      }
+      
+      console.log(`Successfully processed ${processedImages.length} images to data URLs`);
+      
+      // Create PDF
+      setProgressMessage('Creating PDF document...');
+      setProgressPercent(70);
+      const pdfResult = await createPdf(processedImages);
+      
+      if (pdfResult) {
+        setPdfUri(pdfResult);
+        setProgressMessage('PDF generated successfully!');
+        setProgressPercent(100);
+        
+        // Log analytics
+        logAnalyticsEvent('pdf_generation_completed', {
+          batchId,
+          photoCount: photos.length
+        });
+        
+        // Open PDF
+        await openPdf(pdfResult);
+        
+        // Return to previous screen after delay
+        setTimeout(() => {
+          if (isMounted.current) {
+            navigation.goBack();
+          }
+        }, 2000); // Slightly longer delay to ensure PDF opens
+      }
+    } catch (error) {
+      if (isMounted.current) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error('PDF generation error:', errorMessage);
+        setError(`Failed to generate PDF: ${errorMessage}`);
+        Alert.alert('Error', `Failed to generate PDF: ${errorMessage}`);
+        logErrorToFile('generatePdf', error as Error);
+      }
+    } finally {
+      if (isMounted.current) {
         setIsLoading(false);
       }
-    };
-
-    createPdf();
-  }, [photos, reportType]);
-
-  const handlePreview = async () => {
-    if (!pdfUri) return;
-    try {
-      console.log(`[PDFGenerationScreen] Attempting to share/preview PDF: ${pdfUri}`);
-      const isAvailable = await Sharing.isAvailableAsync();
-      if (!isAvailable) {
-        Alert.alert("Preview Not Available", "Sharing/Preview functionality is not available on this device.");
-        return;
-      }
-      await Sharing.shareAsync(pdfUri, { dialogTitle: 'Preview PDF Report', mimeType: 'application/pdf' });
-    } catch (err) {
-      console.error("[PDFGenerationScreen] Failed to preview PDF:", err);
-      await logErrorToFile(`[PDFGenerationScreen] PDF preview failed`, err instanceof Error ? err : new Error(String(err)));
-      Alert.alert("Preview Failed", "Could not open PDF for preview.");
     }
   };
 
-  const handleShare = async () => {
-    if (!pdfUri) return;
-    if (!(await Sharing.isAvailableAsync())) {
-      Alert.alert("Sharing Not Available", "Sharing is not available on this device.");
-      return;
-    }
-    try {
-      console.log(`[PDFGenerationScreen] Sharing PDF: ${pdfUri}`);
-      await Sharing.shareAsync(pdfUri, { dialogTitle: 'Share PDF Report', mimeType: 'application/pdf' });
-    } catch (err) {
-      console.error("[PDFGenerationScreen] Failed to share PDF:", err);
-      await logErrorToFile(`[PDFGenerationScreen] PDF sharing failed`, err instanceof Error ? err : new Error(String(err)));
-      Alert.alert("Share Failed", "Could not share PDF report.");
-    }
+  // Function to select picture type and show notes input
+  const selectPictureTypeAndContinue = (type: PictureType) => {
+    setPictureType(type);
+    setShowPictureTypeModal(false);
+    setShowNotesInput(true); // Show notes input after selecting picture type
   };
-
-  const handleSave = () => {
-    if (!pdfUri) return;
-    Alert.alert("File Saved", `PDF report saved successfully in the app's documents folder as: ${pdfUri.split('/').pop()}`);
+  
+  // Function to submit notes and continue with PDF generation
+  const submitNotesAndContinue = () => {
+    setShowNotesInput(false);
+    fetchAndGeneratePDF();
   };
-
-  const handleSyncERP = async () => {
-    if (!pdfUri) {
-      Alert.alert("Error", "PDF is not yet generated or failed to generate.");
-      return;
-    }
-    Alert.alert("Syncing to ERP", "Attempting to upload PDF report... (Mock)", [{ text: "OK" }]);
+  
+  // Function to fetch batch data and generate PDF
+  const fetchAndGeneratePDF = async () => {
     try {
-      // Construct the SyncData object expected by mockSyncToErp
-      const syncData = {
-        pdfUri: pdfUri,
-        metadata: {
-          reportType: reportType, // Include report type in synced data
-          partNumber: photos[0]?.metadata.partNumber || 'N/A', // Use first photo's part number or N/A
-          batchId: contextIdentifier, // Use order/inventory ID as batch ID
-          timestamp: new Date().toISOString(), // Current timestamp for sync
-          userId: userId
+      setIsLoading(true);
+      setProgressMessage('Loading batch details...');
+      
+      console.log(`[PDFGenerationScreen] Fetching details for batch: ${batchId}`);
+      
+      // Use the database service to get the actual batch details and photos
+      const { batch, photos } = await databaseService.getBatchDetails(batchId);
+      
+      console.log(`[PDFGenerationScreen] Database returned ${photos.length} photos for batch ${batchId}`);
+      
+      if (batch && photos.length > 0) {
+        // Filter photos based on pictureType if needed
+        const filteredPhotos = pictureType === 'Defect Pictures' 
+          ? photos.filter(photo => photo.isDefect) 
+          : photos;
+        
+        console.log(`[PDFGenerationScreen] Using ${filteredPhotos.length} ${pictureType} for PDF generation`);
+        
+        if (filteredPhotos.length === 0) {
+          Alert.alert(
+            'No Photos Found',
+            `No ${pictureType.toLowerCase()} found in this batch.`,
+            [{ text: 'OK', onPress: () => navigation.goBack() }]
+          );
+          return;
         }
-      };
-      const { success } = await mockSyncToErp(syncData);
-      if (success) {
-        Alert.alert("Sync Successful", "Report successfully synced to ERP (Mock).");
+        
+        // Automatically generate the PDF with the filtered photos
+        await generatePdf(filteredPhotos);
       } else {
-        Alert.alert("Sync Failed", "Could not sync report to ERP (Mock). Check connection or queue.");
+        console.warn(`[PDFGenerationScreen] No batch or photos found with ID ${batchId}`);
+        Alert.alert(
+          'No Photos Found',
+          'No photos found in this batch. Please capture photos before generating a PDF.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
       }
-    } catch (err) {
-      console.error("[PDFGenerationScreen] ERP Sync failed:", err);
-      await logErrorToFile(`[PDFGenerationScreen] ERP Sync failed`, err instanceof Error ? err : new Error(String(err)));
-      Alert.alert("Sync Error", "An error occurred during ERP sync.");
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[PDFGenerationScreen] Error: ${errorMessage}`);
+      logErrorToFile('fetchAndGeneratePDF', error as Error);
+      Alert.alert(
+        'Error',
+        `Failed to generate PDF: ${errorMessage}`,
+        [{ text: 'OK', onPress: () => navigation.goBack() }]
+      );
     }
   };
-
-  const handleDone = () => {
-    console.log("[PDFGenerationScreen] Process complete. Navigating to Dashboard.");
-    navigation.popToTop();
-  };
-
-  if (isLoading) {
-    return (
-      <SafeAreaView style={styles.safeAreaCentered}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Generating PDF Report...</Text>
-      </SafeAreaView>
-    );
-  }
-
-  if (!pdfUri) {
-    return (
-      <SafeAreaView style={styles.safeAreaCentered}>
-        <Ionicons name="alert-circle-outline" size={60} color={COLORS.error} />
-        <Text style={styles.errorText}>Failed to generate PDF report.</Text>
-        <CustomButton title="Go Back" onPress={() => navigation.goBack()} variant='outline' />
-      </SafeAreaView>
-    );
-  }
-
+  
+  // Start the PDF generation process when component mounts
+  useEffect(() => {
+    // If picture type is already provided, show notes input
+    if (routePictureType) {
+      setShowNotesInput(true);
+    }
+    // Otherwise, we'll show the picture type modal first
+    
+    // Cleanup when component unmounts
+    return () => {
+      isMounted.current = false;
+      cleanupTempFiles();
+    };
+  }, [batchId, navigation]);
+  
+  // Render the screen content
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
-      <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.header}>
-          <Ionicons name="checkmark-done-outline" size={50} color={pdfUri ? COLORS.success : COLORS.textDisabled} />
-          <Text style={styles.title}>PDF Report Generated</Text>
-          <Text style={styles.subtitle}>{pdfUri.split('/').pop()}</Text>
+      
+      {/* Picture Type Selection Modal */}
+      {showPictureTypeModal && (
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select PDF Content</Text>
+            <Text style={styles.modalSubtitle}>What type of pictures would you like to include?</Text>
+            
+            <TouchableOpacity 
+              style={styles.optionButton}
+              onPress={() => selectPictureTypeAndContinue('Pictures')}
+            >
+              <Ionicons name="images-outline" size={24} color={COLORS.primary} />
+              <Text style={styles.optionText}>All Pictures</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.optionButton}
+              onPress={() => selectPictureTypeAndContinue('Defect Pictures')}
+            >
+              <Ionicons name="warning-outline" size={24} color={COLORS.error} />
+              <Text style={styles.optionText}>Defect Pictures Only</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.cancelButton}
+              onPress={() => navigation.goBack()}
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-
-        <View style={styles.previewPlaceholder}>
-          <Ionicons name="document-text-outline" size={30} color={COLORS.grey500} style={{ marginBottom: SPACING.small }} />
-          <Text style={styles.previewText}>Context: {contextIdentifier}</Text>
-          <Text style={styles.previewText}>Photos included: {photos.length}</Text>
-          <Text style={styles.previewText}>Saved to device documents.</Text>
+      )}
+      
+      {/* Notes Input Modal */}
+      {showNotesInput && (
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add Notes (Optional)</Text>
+            <Text style={styles.modalSubtitle}>Add notes to include in the filename (30 char max)</Text>
+            
+            <TextInput
+              style={styles.notesInput}
+              placeholder="Enter notes (e.g., Housing Bore)"
+              value={notes}
+              onChangeText={setNotes}
+              maxLength={30}
+            />
+            
+            <View style={styles.notesButtonContainer}>
+              <TouchableOpacity 
+                style={styles.skipButton}
+                onPress={() => {
+                  setNotes('');
+                  submitNotesAndContinue();
+                }}
+              >
+                <Text style={styles.skipButtonText}>Skip</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={styles.continueButton}
+                onPress={submitNotesAndContinue}
+              >
+                <Text style={styles.continueButtonText}>Continue</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
-
-        <View style={styles.actionsContainer}>
-          <CustomButton
-            title="Preview / Open"
-            onPress={handlePreview}
-            variant="outline"
-            icon={<Ionicons name="eye-outline" size={20} color={COLORS.primary} />}
-            style={styles.actionButton}
-          />
-          <CustomButton
-            title="Share"
-            onPress={handleShare}
-            variant="outline"
-            icon={<Ionicons name="share-social-outline" size={20} color={COLORS.primary} />}
-            style={styles.actionButton}
-          />
-          <CustomButton
-            title="Confirm Saved"
-            onPress={handleSave}
-            variant="outline"
-            icon={<Ionicons name="checkmark-done-outline" size={20} color={COLORS.success} />}
-            style={styles.actionButton}
-          />
-        </View>
-
-        <View style={styles.syncContainer}>
-          <CustomButton
-            title="Sync to ERP (Mock)"
-            onPress={handleSyncERP}
-            variant="secondary"
-            icon={<Ionicons name="cloud-upload-outline" size={20} color={COLORS.white} />}
-          />
-        </View>
-
-        <View style={styles.doneButtonContainer}>
-          <CustomButton
-            title="Finish & Go Home"
-            onPress={handleDone}
-            variant="primary"
-            icon={<Ionicons name="home-outline" size={20} color={COLORS.white} />}
-          />
-        </View>
-      </ScrollView>
+      )}
+      
+      <View style={styles.loadingContainer}>
+        {isLoading && (
+          <>
+            <ActivityIndicator size="large" color={COLORS.primary} />
+            <Text style={styles.loadingText}>{progressMessage}</Text>
+            
+            {progressPercent > 0 && (
+              <View style={styles.progressContainer}>
+                <View style={[styles.progressBar, { width: `${progressPercent}%` }]} />
+              </View>
+            )}
+            <Text style={styles.progressText}>{progressPercent}%</Text>
+          </>
+        )}
+        
+        {error && (
+          <>
+            <Ionicons name="alert-circle" size={48} color={COLORS.error} />
+            <Text style={styles.errorText}>{error}</Text>
+            <View style={styles.buttonContainer}>
+              <View style={styles.button}>
+                <Text style={styles.buttonText} onPress={() => navigation.goBack()}>Back to Batch</Text>
+              </View>
+            </View>
+          </>
+        )}
+        
+        {pdfUri && !isLoading && (
+          <>
+            <Ionicons name="checkmark-circle" size={48} color={COLORS.success} />
+            <Text style={styles.successText}>PDF Generated Successfully!</Text>
+            <Text style={styles.loadingText}>Opening PDF...</Text>
+          </>
+        )}
+      </View>
     </SafeAreaView>
   );
 };
 
+// Styles
 const styles = StyleSheet.create({
-  safeArea: {
+  container: {
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  safeAreaCentered: {
+  loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
-    padding: SPACING.large,
-  },
-  container: {
-    flexGrow: 1,
-    padding: SPACING.medium,
-    alignItems: 'center',
-    paddingBottom: SPACING.xlarge,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: SPACING.large,
-    paddingTop: SPACING.medium,
-  },
-  title: {
-    fontSize: FONTS.xlarge,
-    fontWeight: 'bold',
-    color: COLORS.textPrimary,
-    marginTop: SPACING.small,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: FONTS.regular,
-    color: COLORS.textSecondary,
-    marginTop: SPACING.tiny,
-    textAlign: 'center',
+    padding: 20,
   },
   loadingText: {
-    marginTop: SPACING.medium,
-    fontSize: FONTS.large,
-    color: COLORS.textSecondary,
+    fontSize: 16,
+    color: '#666',
+    marginTop: 10,
+    textAlign: 'center',
+  },
+  progressContainer: {
+    width: '80%',
+    height: 8,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 4,
+    marginTop: 20,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: COLORS.primary,
+  },
+  progressText: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 5,
   },
   errorText: {
-    marginTop: SPACING.medium,
-    fontSize: FONTS.large,
+    fontSize: 16,
     color: COLORS.error,
+    marginTop: 10,
+    marginBottom: 20,
     textAlign: 'center',
-    marginBottom: SPACING.medium,
   },
-  previewPlaceholder: {
-    width: '100%',
-    padding: SPACING.large,
-    backgroundColor: COLORS.white,
-    borderRadius: BORDER_RADIUS.medium,
-    marginBottom: SPACING.large,
-    ...SHADOWS.small,
+  successText: {
+    fontSize: 18,
+    color: COLORS.success,
+    marginTop: 10,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  buttonContainer: {
+    marginTop: 20,
+  },
+  button: {
+    backgroundColor: COLORS.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 5,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  // Modal styles
+  modalContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
-    borderLeftWidth: 5,
-    borderLeftColor: COLORS.primary,
+    zIndex: 1000,
   },
-  previewText: {
-    fontSize: FONTS.regular,
-    color: COLORS.textSecondary,
-    marginBottom: SPACING.small,
+  modalContent: {
+    backgroundColor: COLORS.white,
+    borderRadius: 10,
+    padding: 20,
+    width: '80%',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
-  actionsContainer: {
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: COLORS.primary,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    color: COLORS.grey700,
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  optionButton: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    padding: 15,
+    borderRadius: 8,
+    marginVertical: 8,
     width: '100%',
-    marginBottom: SPACING.large,
-    flexWrap: 'wrap',
   },
-  actionButton: {
-    marginVertical: SPACING.tiny,
-    marginHorizontal: SPACING.tiny,
-    flexBasis: '45%',
-    flexGrow: 1,
+  optionText: {
+    fontSize: 16,
+    marginLeft: 10,
+    color: COLORS.grey800,
+    fontWeight: '500',
   },
-  syncContainer: {
+  cancelButton: {
+    marginTop: 20,
+    padding: 10,
+  },
+  cancelText: {
+    color: COLORS.grey600,
+    fontSize: 16,
+  },
+  notesInput: {
     width: '100%',
-    marginBottom: SPACING.large,
-    paddingHorizontal: SPACING.medium,
+    borderWidth: 1,
+    borderColor: COLORS.grey400,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    marginBottom: 20,
   },
-  doneButtonContainer: {
+  notesButtonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     width: '100%',
-    paddingHorizontal: SPACING.large,
-    marginTop: SPACING.medium,
-    paddingBottom: SPACING.large,
   },
+  skipButton: {
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.grey300,
+    width: '45%',
+    alignItems: 'center',
+  },
+  skipButtonText: {
+    color: COLORS.grey700,
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  continueButton: {
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.primary,
+    width: '45%',
+    alignItems: 'center',
+  },
+  continueButtonText: {
+    color: COLORS.white,
+    fontSize: 16,
+    fontWeight: '500',
+  }
 });
 
 export default PDFGenerationScreen;

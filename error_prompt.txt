@@ -1,0 +1,158 @@
+I’m working on a React Native app using Expo for aviation quality control, built with Windsurf and various AI agents. A cascade error occurred in the last session, causing lag and incomplete output, likely due to processing a large codebase or conversation history. The app’s core purpose is to photograph aircraft parts (single, batches, or random by inventory ID), scan barcodes/QR codes with `expo-camera` for order number/inventory ID (used for file naming/metadata), annotate/highlight defects with color-coded markers and notes, batch photos into PDFs, save them dynamically (e.g., `Order_123.pdf`, `Inventory_A456.pdf`), export to a file, and prepare for Salesforce ERP integration. The project uses TypeScript (`app.tsx` as entry point, `index.js` for registration), `app.json`, and at least two test screens in `screens/`. The app must be fast (<1s photo capture, <3s PDF generation), robust (error handling, offline support), and efficient (minimal steps). The codebase is on GitHub at `https://github.com/your-username/AviationQualityControlApp`.
+
+As a Windsurf agent using Claude 3.7 Sonnet, recover from the cascade error and continue development with these steps, adhering to KISS principles (Keep It Simple, Stupid) to prevent lag and errors:
+
+1. **Identify Last Progress**:
+   - Review the last successful output or conversation state (e.g., files generated, features reviewed). If unavailable, assume a partial codebase review (e.g., `app.tsx`, some `screens/`) and start from there.
+   - Check the GitHub repo (`https://github.com/your-username/AviationQualityControlApp`) for the latest committed code to confirm progress.
+
+2. **Resume Codebase Review**:
+   - Thoroughly analyze the ENTIRE codebase (`app.tsx`, `screens/`, `components/`, `services/`, `index.js`, `app.json`) to identify features (e.g., navigation, barcode scanning, photo capture), bugs (e.g., camera crashes), and gaps (e.g., missing defect annotation).
+   - Process in chunks (e.g., `screens/` first, then `components/`) to avoid overload, maintaining a progress log (e.g., “Chunk 1: Reviewed screens/, found PhotoCaptureScreen.tsx with slow scanning”).
+   - Summarize findings: implemented features, issues, and recommendations.
+
+3. **Rethink UX Workflow**:
+   - Optimize for an AI user: fast (scan-and-shoot), robust (offline, retries), efficient (minimal inputs).
+   - Workflow: 
+     - Dashboard: One-tap session start (Single, Batch, Inventory), barcode scan, offline status.
+     - Barcode Scanning & Photo Capture: QR/barcode scan for order/inventory ID, one-tap capture, batch support, optional annotation.
+     - Defect Annotation: Color-coded markers, notes, minimal taps.
+     - Batch Management: Live preview, add/delete/re-annotate.
+     - PDF Generation: Instant PDFs, dynamic naming, save/share.
+     - Export: Save to device, queue Salesforce sync.
+     - Offline Support: Cache data, sync later.
+     - Analytics: Track sessions/scans.
+     - Debugging: Error log viewer.
+
+4. **Continue Development**:
+   - Enhance existing features: Optimize speed (e.g., barcode scanning <500ms), robustness (e.g., retry bad scans), efficiency (e.g., fewer taps), fix bugs (e.g., navigation loops).
+   - Implement missing features: Defect annotation (`react-native-sketch-canvas`), PDF batching (`expo-print`), analytics, debug screen, Salesforce stub (`services/salesforceService.ts`).
+   - Keep code simple: Clear names, minimal dependencies, no complex state management unless needed.
+   - Add safeguards: Comments for logic, input validation, edge case handling, crash testing.
+
+5. **Prevent Cascade Errors**:
+   - Process large tasks in chunks, outputting one file or feature at a time.
+   - Keep responses concise, avoiding verbose explanations.
+   - Use modular files (e.g., separate `components/`, `services/`) to reduce session size.
+   - If lag reoccurs, pause and output a progress log, suggesting the next chunk.
+
+### Requirements
+1. **Navigation**:
+   - Review: Check `@react-navigation/native`, `@react-navigation/stack`.
+   - Enhance/Fix: Optimize transitions (<500ms), add header (title, offline badge, scan button), fix bugs, add TypeScript types (StackParamList).
+   - If Missing: Implement in `app.tsx` with screens:
+     - `DashboardScreen.tsx`, `PhotoCaptureScreen.tsx`, `DefectHighlightingScreen.tsx`, `BatchPreviewScreen.tsx`, `PDFGenerationScreen.tsx`, `AnalyticsScreen.tsx`, `DebugScreen.tsx`.
+   - Add bottom tabs (Dashboard, Analytics).
+
+2. **Barcode Scanning & Photo Capture**:
+   - Review: Assess `expo-camera`, scanning speed/reliability.
+   - Enhance/Fix: Optimize scanning (<500ms), retry bad scans, fix crashes, ensure file naming (e.g., `Order_123.pdf`).
+   - If Missing: Implement in `PhotoCaptureScreen.tsx`:
+     - Request permissions, alert with retry.
+     - Scan QR/barcodes, fallback to TextInput.
+     - Capture photos, compress with `expo-image-manipulator` (~80% quality, <100ms).
+     - Save metadata (order number/inventory ID, timestamp, user ID).
+     - Navigate to DefectHighlightingScreen or BatchPreviewScreen.
+   - Add flash toggle, auto-focus, scan logging.
+
+3. **Defect Annotation and Highlighting**:
+   - Review: Check for `react-native-sketch-canvas`.
+   - Enhance/Fix: Optimize performance, add colors (red/yellow/green), fix save bugs.
+   - If Missing: Implement in `DefectHighlightingScreen.tsx`:
+     - Load photo, draw annotations (color: red/yellow/green, stroke: 3-5px).
+     - TextInput for notes, dropdown for severity (Critical, Moderate, Minor).
+     - Save, navigate to BatchPreviewScreen.
+   - Add "Skip", "Undo", "Clear" buttons, save modal.
+
+4. **Batch Management**:
+   - Review: Check for preview/grouping.
+   - Enhance/Fix: Optimize loading, fix grouping, add delete/re-annotate.
+   - If Missing: Implement in `BatchPreviewScreen.tsx`:
+     - Show photos by order/inventory session (thumbnails, metadata, annotations).
+     - Delete or re-annotate.
+     - Navigate to PDFGenerationScreen.
+   - Add "Add More Photos" button, batch summary.
+
+5. **PDF Generation**:
+   - Review: Check `expo-print`, `expo-sharing`.
+   - Enhance/Fix: Optimize speed (<3s for 5 photos), add batching, fix errors, ensure dynamic naming.
+   - If Missing: Implement in `PDFGenerationScreen.tsx`:
+     - Generate PDFs with photos, metadata, annotations, notes.
+     - Batch by order/inventory session.
+     - Name files (e.g., `Order_123_20250518.pdf`).
+     - Preview (modal), save, share.
+   - Add batch summary, compress PDFs.
+
+6. **Export and Mock Salesforce Integration**:
+   - Review: Check export or mock API.
+   - Enhance/Fix: Improve reliability, add sync logs, use scanned reference numbers.
+   - If Missing: Create `services/salesforceService.ts`:
+     - Mock POST calls, simulating Salesforce sync.
+     - Add "Sync to Salesforce" button.
+     - Store responses in `expo-file-system`.
+   - Log sync attempts, queue offline syncs.
+
+7. **Offline Support**:
+   - Review: Check caching/sync.
+   - Enhance/Fix: Optimize storage, enhance queue, fix bugs.
+   - If Missing: Use `expo-file-system`, `expo-sqlite`:
+     - Cache photos, metadata, annotations, PDFs.
+     - Queue PDF generation, Salesforce sync.
+     - Add "Sync" button on DashboardScreen.
+   - Show "Offline Mode" badge with task count.
+
+8. **Analytics**:
+   - Review: Check tracking/stats.
+   - Enhance/Fix: Add charts, fix accuracy, improve UI.
+   - If Missing: Implement in `AnalyticsScreen.tsx`:
+     - Track sessions, defects, scans (count, timestamps, user IDs).
+     - Display in table with `react-native-chart-kit` bar chart.
+     - Store in `expo-sqlite`.
+   - Filter by date, show defect severity, scan success rate.
+
+9. **Error Handling and Debugging**:
+   - Review: Check error handling/logging.
+   - Enhance/Fix: Add retries, log errors, fix unhandled cases.
+   - If Missing: Implement:
+     - Alerts for permissions, storage, PDF, network, scan errors.
+     - Error logging to `expo-file-system`.
+     - `DebugScreen.tsx` for logs.
+   - Add retry buttons.
+
+### Project Requirements
+- **Structure**: Update `screens/`, create `components/` (e.g., CustomButton.tsx), `services/` (e.g., salesforceService.ts), update `app.tsx`, ensure `index.js` registers `app.tsx`.
+- **Dependencies**: Install `expo-camera`, `expo-image-manipulator`, `@terrylinla/react-native-sketch-canvas`, `expo-print`, `expo-sharing`, `expo-file-system`, `expo-sqlite`, `@react-navigation/native`, `@react-navigation/stack`, `@react-navigation/bottom-tabs`, `react-native-gesture-handler`, `react-native-reanimated`, `react-native-screens`, `react-native-safe-area-context`, `react-native-chart-kit`. Provide `expo install` commands.
+- **TypeScript**: Use TypeScript, define types for navigation (StackParamList), photo data (e.g., { uri: string, metadata: { orderNumber: string, inventoryId: string, timestamp: string, userId: string } }), props. Ensure type safety.
+- **Testing**: Provide steps to test on Android/iOS via Expo Go. Update `app.json`, iOS `Info.plist` for camera. Test cases: Navigation, QR/barcode scanning, photo capture, defect annotation, batch management, PDF generation, offline mode, analytics, debugging, Salesforce stub.
+- **KISS and Safeguards**:
+  - Simple logic, minimal dependencies, clear names.
+  - Comments for all logic.
+  - Validate inputs, handle edge cases, test for crashes.
+  - Chunk large tasks, output one file/feature at a time.
+  - If lag occurs, pause, output progress log, suggest next chunk.
+
+### Output Format
+- **Project Review**: Detailed summary of features, state, bugs, inefficiencies.
+- **Progress Assessment**: Implemented features, gaps, recommendations.
+- **Progress Log**: Track reviewed files (e.g., “Chunk 1: screens/”).
+- **File Structure**: Code for:
+  - `app.tsx`
+  - `screens/DashboardScreen.tsx`, `screens/PhotoCaptureScreen.tsx`, `screens/DefectHighlightingScreen.tsx`, `screens/BatchPreviewScreen.tsx`, `screens/PDFGenerationScreen.tsx`, `screens/AnalyticsScreen.tsx`, `screens/DebugScreen.tsx`
+  - `components/CustomButton.tsx`, `components/CustomInput.tsx`
+  - `services/salesforceService.ts`, `services/analyticsService.ts`
+- **Setup Section**: Dependencies, `app.json`, `Info.plist` updates.
+- **Testing Instructions**: Run and test (e.g., `expo start`, test QR scanning).
+- **Changelog**: Enhancements/fixes (e.g., “Optimized barcode scanning”).
+- Keep outputs concise, modular, lag-free.
+
+### Notes
+- Review ALL files, chunk if needed, log progress.
+- Skim history for features (e.g., navigation, barcode scanning).
+- Design for AI user: fast, robust, efficient.
+- Ensure Expo-compatible, modular code with smooth UX.
+- Fallbacks: Manual input if QR scanning fails.
+- KISS: Simple logic, minimal dependencies, clear comments.
+- Prevent errors: Validate inputs, test edge cases, avoid overcomplication.
+- If cascade error reoccurs, output progress log and pause.
+
+Generate the code, review, progress assessment, setup instructions, testing steps, changelog, and progress log as an organized response with code blocks. If incomplete due to lag, provide a progress log and instructions to continue. We left off starting to add Barcode scanning implementation

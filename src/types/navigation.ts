@@ -25,9 +25,14 @@ export type RootStackParamList = {
     | { mode: 'Single' | 'Batch' | 'Inventory'; userId: string; orderNumber?: string; inventoryId?: string } // Starting new
     | { batchId: number }; // Resuming existing batch
   DefectHighlighting: { photo: PhotoData }; // Pass the specific photo to annotate
-  Annotation: { photoId: string; photoUri: string; batchId: number }; // Add Annotation Screen
-  BatchPreview: { batchId: number };
-  PDFGeneration: { batchId: number };
+  Annotation: { photoId: string; photoUri: string; batchId: number; returnToBatch?: boolean }; // Add Annotation Screen
+  BatchPreview: { batchId: number; identifier?: string };
+  PDFGeneration: { 
+    batchId: number; 
+    reportType?: 'order' | 'inventory'; 
+    orderNumber?: string; 
+    inventorySessionId?: string; 
+  };
   Debug: undefined; // For DebugScreen
   // No AnalyticsScreen here, it's a Tab
 };

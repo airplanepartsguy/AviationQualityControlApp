@@ -97,11 +97,14 @@ export const getPhotoBatchById = async (batchId: number): Promise<PhotoBatch | n
 
     return {
       id: batchRow.id,
+      type: batchRow.orderNumber ? 'Order' : 'Inventory',
+      referenceId: batchRow.orderNumber || batchRow.inventoryId || `batch-${batchRow.id}`,
       orderNumber: batchRow.orderNumber,
       inventoryId: batchRow.inventoryId,
       userId: batchRow.userId,
       createdAt: batchRow.createdAt,
-      status: batchRow.status,
+      status: batchRow.status === 'pending' ? 'InProgress' : 
+              batchRow.status === 'completed' ? 'Completed' : 'Exported',
       photos: photos, // Embed photos directly
     };
   } catch (error) {
@@ -112,34 +115,34 @@ export const getPhotoBatchById = async (batchId: number): Promise<PhotoBatch | n
 
 // Retrieve all batches with a specific status (e.g., 'pending')
 export const getPhotoBatchesByStatus = async (status: string): Promise<PhotoBatch[]> => {
-    const database = await openDatabase();
-    try {
-        const batchRows = await database.getAllAsync<any>(
-            'SELECT * FROM photo_batches WHERE status = ? ORDER BY createdAt DESC',
-            [status]
-        );
+  const database = await openDatabase();
+  try {
+    const batchRows = await database.getAllAsync<any>(
+      'SELECT * FROM photo_batches WHERE status = ? ORDER BY createdAt DESC',
+      [status]
+    );
 
-        const batches: PhotoBatch[] = [];
-        for (const row of batchRows) {
-            // Optionally fetch photos for each batch here if needed immediately,
-            // or fetch them on demand when a batch is selected.
-            // For simplicity, let's fetch them here for now.
-            const photos = await getPhotosByBatchId(row.id);
-            batches.push({
-                id: row.id,
-                orderNumber: row.orderNumber,
-                inventoryId: row.inventoryId,
-                userId: row.userId,
-                createdAt: row.createdAt,
-                status: row.status,
-                photos: photos,
-            });
-        }
-        return batches;
-    } catch (error) {
-        console.error(`[databaseService] Error getting batches with status ${status}:`, error);
-        throw error;
+    const batches: PhotoBatch[] = [];
+    for (const row of batchRows) {
+      // Optionally fetch photos for each batch here if needed immediately,
+      // or fetch them on demand when a batch is selected.
+      // For simplicity, let's fetch them here for now.
+      const photos = await getPhotosByBatchId(row.id);
+      batches.push({
+        id: row.id,
+        orderNumber: row.orderNumber,
+        inventoryId: row.inventoryId,
+        userId: row.userId,
+        createdAt: row.createdAt,
+        status: row.status,
+        photos: photos,
+      } as PhotoBatch);
     }
+    return batches;
+  } catch (error) {
+    console.error(`[databaseService] Error getting batches with status ${status}:`, error);
+    throw error;
+  }
 };
 
 // Update batch status
@@ -199,22 +202,18 @@ export const deletePhotoBatch = async (batchId: number): Promise<void> => {
 export const savePhoto = async (batchId: number, photoData: PhotoData): Promise<void> => {
   const database = await openDatabase();
   try {
-    // Ensure URI is valid and file exists before saving DB record
-    const fileInfo = await FileSystem.getInfoAsync(photoData.uri);
-    if (!fileInfo.exists) {
-        throw new Error(`Photo file does not exist at URI: ${photoData.uri}`);
-    }
-
-    const metadataJson = JSON.stringify(photoData.metadata);
+    // Convert metadata and annotations to JSON strings
+    const metadataJson = JSON.stringify(photoData.metadata || {});
     const annotationsJson = photoData.annotations ? JSON.stringify(photoData.annotations) : null;
-
+    const partNumber = photoData.partNumber || null; // Use null for undefined values
+    
     await database.runAsync(
-      'INSERT INTO photos (id, batchId, partNumber, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?)',
-      [photoData.id, batchId, photoData.partNumber, photoData.uri, metadataJson, annotationsJson]
+      'INSERT OR REPLACE INTO photos (id, batchId, partNumber, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?)',
+      [photoData.id, batchId, partNumber, photoData.uri, metadataJson, annotationsJson]
     );
-    console.log(`[databaseService] Saved photo ${photoData.id} for batch ${batchId}`);
+    console.log(`[databaseService] Saved photo ${photoData.id} to batch ${batchId}`);
   } catch (error) {
-    console.error(`[databaseService] Error saving photo ${photoData.id} for batch ${batchId}:`, error);
+    console.error(`[databaseService] Error saving photo to batch ${batchId}:`, error);
     throw error;
   }
 };
@@ -223,19 +222,19 @@ export const savePhoto = async (batchId: number, photoData: PhotoData): Promise<
 export const getPhotosByBatchId = async (batchId: number): Promise<PhotoData[]> => {
   const database = await openDatabase();
   try {
-    const photoRows = await database.getAllAsync<any>(
+    const rows = await database.getAllAsync<any>(
       'SELECT * FROM photos WHERE batchId = ?',
       [batchId]
     );
-
-    return photoRows.map((row: { id: string; uri: string; metadataJson: string; annotationsJson: string | null }) => ({
+    
+    return rows.map(row => ({
       id: row.id,
       uri: row.uri,
-      // partNumber is now within metadata, parse it out if needed where used
-      // For simplicity, we reconstruct based on metadata here if required by PhotoData type
-      partNumber: JSON.parse(row.metadataJson).partNumber || 'N/A', 
-      metadata: JSON.parse(row.metadataJson) as PhotoMetadata,
-      annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) as AnnotationData[] : undefined,
+      batchId: batchId,
+      partNumber: row.partNumber || '',
+      metadata: JSON.parse(row.metadataJson || '{}'),
+      annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined,
+      syncStatus: 'pending' // Default sync status
     }));
   } catch (error) {
     console.error(`[databaseService] Error getting photos for batch ${batchId}:`, error);
@@ -329,23 +328,46 @@ export const getPhotosForBatch = async (batchId: number): Promise<PhotoData[]> =
       // Add other fields from the photos table if necessary
   }
   const results = await db.getAllAsync<PhotoRow>(
-    'SELECT * FROM photos WHERE batchId = ? ORDER BY createdAt ASC',
+    'SELECT * FROM photos WHERE batchId = ?',
     [batchId]
   );
   // Manually parse metadata back into an object
   return results.map((row: PhotoRow) => ({
-    ...row,
+    id: row.id,
+    uri: row.uri,
+    batchId: row.batchId,
     partNumber: row.partNumber || '', // Provide default or handle potential null
     metadata: JSON.parse(row.metadataJson || '{}'), // Ensure metadata is parsed from JSON string
-    annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined // Parse annotations if they exist
+    annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined, // Parse annotations if they exist
+    syncStatus: 'pending' // Default sync status since it's not stored in the database
   }));
 };
 
 // Fetches batch details and all associated photos
 export const getBatchDetails = async (batchId: number): Promise<{ batch: PhotoBatch | null; photos: PhotoData[] }> => {
   const db = await openDatabase();
-  const batch = await db.getFirstAsync<PhotoBatch>('SELECT * FROM photo_batches WHERE id = ?', [batchId]);
+  const batchRow = await db.getFirstAsync<any>('SELECT * FROM photo_batches WHERE id = ?', [batchId]);
   const photos = await getPhotosForBatch(batchId); // Reuse existing function
+  
+  // If no batch was found, return null
+  if (!batchRow) {
+    return { batch: null, photos };
+  }
+  
+  // Map the database row to a PhotoBatch object
+  const batch: PhotoBatch = {
+    id: batchRow.id,
+    type: batchRow.orderNumber ? 'Order' : 'Inventory',
+    referenceId: batchRow.orderNumber || batchRow.inventoryId || `batch-${batchRow.id}`,
+    orderNumber: batchRow.orderNumber,
+    inventoryId: batchRow.inventoryId,
+    userId: batchRow.userId,
+    createdAt: batchRow.createdAt,
+    status: batchRow.status === 'pending' ? 'InProgress' : 
+            batchRow.status === 'completed' ? 'Completed' : 'Exported',
+    photos: photos
+  };
+  
   return { batch, photos };
 };
 

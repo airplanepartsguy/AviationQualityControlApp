@@ -96,7 +96,14 @@ const BatchPreviewScreen: React.FC = () => {
 
   const handleAnnotatePhoto = (photoId: string) => {
     console.log(`[BatchPreviewScreen] Navigating to annotate photo ${photoId} for batch ${batchId}`);
-    navigation.navigate('DefectHighlighting', { photoId, batchId });
+    // Find the photo in the photos array
+    const photo = photos.find(p => p.id === photoId);
+    if (photo) {
+      navigation.navigate('DefectHighlighting', { photo });
+    } else {
+      console.error(`[BatchPreviewScreen] Photo with ID ${photoId} not found in batch`);
+      Alert.alert('Error', 'Photo not found in batch. Please try again.');
+    }
   };
 
   const handleDiscardBatch = () => {
@@ -115,7 +122,7 @@ const BatchPreviewScreen: React.FC = () => {
               await deleteBatch(batchId); 
               logAnalyticsEvent('batch_discarded', { userId, batchId, photoCount: photos.length });
               Alert.alert('Success', 'Batch discarded successfully.');
-              navigation.navigate('MainAppTabs', { screen: 'Dashboard', params: { userId: userId || 'unknown' } });
+              navigation.navigate('MainTabs', { screen: 'DashboardTab' });
             } catch (err: any) {
               setIsLoading(false);
               console.error('[BatchPreviewScreen] Error discarding batch:', err);
@@ -133,8 +140,8 @@ const BatchPreviewScreen: React.FC = () => {
       <Image source={{ uri: item.uri }} style={styles.thumbnail} />
       <View style={styles.photoDetails}>
         <Text style={styles.detailText}>Part No: {item.partNumber || 'N/A'}</Text>
-        <Text style={styles.detailText}>Eq ID: {item.metadata?.equipmentId || 'N/A'}</Text>
-        <Text style={styles.detailText}>Comp ID: {item.metadata?.componentId || 'N/A'}</Text>
+        <Text style={styles.detailText}>Equipment: {(item.metadata as any)?.equipmentId || 'Unknown'}</Text>
+        <Text style={styles.detailText}>Component: {(item.metadata as any)?.componentId || 'Unknown'}</Text>
         <Text style={styles.detailText} numberOfLines={1}>Notes: {item.metadata?.defectNotes || 'N/A'}</Text>
         {item.annotations && item.annotations.length > 0 && (
             <Text style={styles.annotationIndicator}>Annotated</Text>

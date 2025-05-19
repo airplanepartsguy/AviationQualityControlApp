@@ -1,475 +1,517 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  Image, 
-  TouchableOpacity, 
-  Alert,
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  Image,
+  TouchableOpacity,
   SafeAreaView,
-  StatusBar,
-  ScrollView,
+  StyleSheet,
+  Alert,
   Modal,
   TextInput,
-  Dimensions
+  ScrollView,
+  GestureResponderEvent,
+  Dimensions,
+  TouchableWithoutFeedback,
+  StatusBar,
+  Platform,
+  KeyboardAvoidingView,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { DefectHighlightingScreenProps } from '../types/navigation';
-import { AnnotationData, PhotoData } from '../types/data';
-import Svg, { Path } from 'react-native-svg';
+import { useRoute, useNavigation } from '@react-navigation/native';
+import { COLORS, SPACING, FONTS, SHADOWS, BORDER_RADIUS } from '../styles/theme';
 import CustomButton from '../components/CustomButton';
-import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService';
-import { COLORS, FONTS, SPACING, SHADOWS, BORDER_RADIUS } from '../styles/theme';
-import * as FileSystem from 'expo-file-system';
+import { PhotoData, AnnotationData } from '../types/data';
+import { logAnalyticsEvent } from '../services/analyticsService';
+import { trackPerformance, useRenderTracker, createTrackedFunction } from '../utils/performanceMonitor';
+import useImagePreloader from '../hooks/useImagePreloader';
+import { DefectHighlightingScreenProps } from '../types/navigation';
 
-const { width: screenWidth } = Dimensions.get('window');
+// Get screen dimensions for responsive layouts
+const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
-// Available colors for marking defects
-const DEFECT_COLORS = [
-  { name: 'Critical', value: COLORS.criticalDefect, severity: 'Critical' as const },
-  { name: 'Moderate', value: COLORS.moderateDefect, severity: 'Moderate' as const },
-  { name: 'Minor', value: COLORS.minorDefect, severity: 'Minor' as const },
-];
+// Color mapping for defect severity
+const DEFECT_SEVERITY_COLORS = {
+  'Minor': '#FFEB3B',    // Yellow
+  'Moderate': '#FF9800', // Orange
+  'Critical': '#F44336', // Red
+  'None': '#9E9E9E',     // Grey
+};
 
-export default function DefectHighlightingScreen({ route, navigation }: DefectHighlightingScreenProps) {
-  // Extract photos and initial index from route params
-  const { photosToAnnotate = [], currentPhotoIndex = 0 } = route.params ?? {};
-
-  const currentPhoto = photosToAnnotate[currentPhotoIndex];
-  const { uri, metadata } = currentPhoto;
-  const { partNumber, timestamp, orderNumber } = metadata;
-
+/**
+ * DefectHighlightingScreen Component
+ * 
+ * This screen allows users to mark and annotate defects on aircraft part photos.
+ * Users can add annotations, specify severity, and add notes for each annotation.
+ * 
+ * Performance optimizations:
+ * - Uses useCallback for event handlers to prevent unnecessary re-renders
+ * - Uses useMemo for expensive UI calculations
+ * - Implements proper error handling with retry options
+ * - Includes offline capability considerations
+ */
+const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => {
+  // Track component renders in development mode
+  useRenderTracker('DefectHighlightingScreen');
+  const navigation = useNavigation<DefectHighlightingScreenProps['navigation']>();
+  const route = useRoute<DefectHighlightingScreenProps['route']>();
+  const { photo } = route.params || {};
+  
+  // State for defect status
+  const [hasDefects, setHasDefects] = useState<boolean>(false);
+  const [defectSeverity, setDefectSeverity] = useState<'Critical' | 'Moderate' | 'Minor' | 'None'>('Moderate');
+  const [defectNotes, setDefectNotes] = useState<string>('');
+  
   // State for annotations
-  const [annotations, setAnnotations] = useState<AnnotationData[]>(currentPhoto.annotations || []);
-  const [selectedColor, setSelectedColor] = useState(DEFECT_COLORS[0]);
+  const [annotations, setAnnotations] = useState<AnnotationData[]>([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationData | null>(null);
-  const [defectNotes, setDefectNotes] = useState('');
-  const [showNotesModal, setShowNotesModal] = useState(false);
+  
+  // UI state
+  const [showNotesModal, setShowNotesModal] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [currentColor, setCurrentColor] = useState<string>(DEFECT_SEVERITY_COLORS.Moderate);
+  
+  // Image state
+  const [imageUri, setImageUri] = useState<string | null>(photo?.uri || null);
+  const imageRef = useRef<Image>(null);
+  
+  // Use the image preloader hook for optimized image loading
+  const { isLoaded, dimensions: imageDimensions, error: imageError, aspectRatio } = useImagePreloader(imageUri);
 
-  // Handle touch on image to add annotation
-  const handleImagePress = (event: any) => {
-    if (!currentPhoto.metadata.hasDefects) return; // Only allow annotations if there are defects
+  // Guard against missing photo data
+  useEffect(() => {
+    if (!photo?.uri) {
+      Alert.alert(
+        'Error', 
+        'Photo data is missing or corrupted.',
+        [{ text: 'Go Back', onPress: () => navigation.goBack() }]
+      );
+      return;
+    }
+  }, [photo, navigation]);
+  
+  // Handle image loading errors
+  useEffect(() => {
+    if (imageError) {
+      console.error('Image loading error:', imageError);
+      Alert.alert(
+        'Warning', 
+        'Could not load image properly. Annotation positioning may be affected.',
+        [{ text: 'Continue Anyway', style: 'default' }]
+      );
+    }
+  }, [imageError]);
+
+  // Handles when user taps on the image to create a new annotation
+  const handleImagePress = useCallback((event: GestureResponderEvent) => {
+    if (!imageUri) return;
     
-    // Get coordinates relative to the image
+    // Get touch coordinates relative to image
     const { locationX, locationY } = event.nativeEvent;
     
-    // Create new annotation that matches the AnnotationData interface
+    const uniqueId = `annotation_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Create an SVG path data for a circle at the tap location
+    const radius = 15; // Size of the annotation marker
+    const pathData = `M ${locationX} ${locationY} m -${radius} 0 a ${radius} ${radius} 0 1 0 ${radius*2} 0 a ${radius} ${radius} 0 1 0 -${radius*2} 0`;
+    
     const newAnnotation: AnnotationData = {
-      id: Date.now().toString(),
-      pathData: `M${locationX},${locationY} L${locationX+1},${locationY+1}`, // Simple path data
-      color: selectedColor.value,
-      strokeWidth: 3,
+      id: uniqueId,
+      pathData,
+      color: currentColor,
       notes: '',
-      severity: selectedColor.severity,
+      severity: defectSeverity,
+      x: locationX,
+      y: locationY
     };
     
-    setAnnotations([...annotations, newAnnotation]);
+    setAnnotations(prev => [...prev, newAnnotation]);
     setSelectedAnnotation(newAnnotation);
-    setDefectNotes('');
-    setShowNotesModal(true);
+    setHasDefects(true);
     
-    // Log analytics event
-    logAnalyticsEvent('annotation_added', { 
-      partNumber, 
-      severity: selectedColor.severity 
-    });
-  };
-
-  // Handle annotation selection
-  const handleAnnotationPress = (annotation: AnnotationData) => {
-    setSelectedAnnotation(annotation);
-    setDefectNotes(annotation.notes || '');
+    // Show notes modal for new annotation
     setShowNotesModal(true);
-  };
+  }, [imageUri, currentColor, defectSeverity]);
 
-  // Save notes for the selected annotation
-  const saveAnnotationNotes = () => {
+  // Handles when user taps on an existing annotation
+  const handleAnnotationPress = useCallback((annotation: AnnotationData) => {
+    setDefectSeverity(annotation.severity);
+    setCurrentColor(DEFECT_SEVERITY_COLORS[annotation.severity]);
+    setSelectedAnnotation(annotation);
+    setShowNotesModal(true);
+  }, []);
+
+  // Saves notes for the selected annotation
+  const saveAnnotationNotes = useCallback((notes: string) => {
     if (!selectedAnnotation) return;
     
-    const updatedAnnotations = annotations.map(ann => 
-      ann.id === selectedAnnotation.id 
-        ? { ...ann, notes: defectNotes } 
-        : ann
+    setAnnotations(prevAnnotations => 
+      prevAnnotations.map(annotation => 
+        annotation.id === selectedAnnotation.id 
+          ? { ...annotation, notes, severity: defectSeverity, color: DEFECT_SEVERITY_COLORS[defectSeverity] }
+          : annotation
+      )
     );
     
-    setAnnotations(updatedAnnotations);
     setShowNotesModal(false);
+    setSelectedAnnotation(null);
     
-    // Log analytics event
-    logAnalyticsEvent('annotation_updated', { 
-      partNumber,
-      notes: defectNotes,
-      severity: selectedAnnotation?.severity || 'Unknown'
+    // Log the annotation event for analytics
+    logAnalyticsEvent('defect_annotated', {
+      photoId: photo?.id,
+      severity: defectSeverity,
+      hasNotes: notes.trim().length > 0
     });
-  };
+  }, [selectedAnnotation, defectSeverity, photo?.id]);
 
-  // Clear all annotations
-  const clearAllAnnotations = () => {
+  // Clears all annotations from the image after confirmation
+  const clearAllAnnotations = useCallback(() => {
     Alert.alert(
       'Clear All Annotations',
-      'Are you sure you want to remove all annotations?',
+      'Are you sure you want to remove all annotations from this image?',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
           text: 'Clear All', 
-          style: 'destructive',
+          style: 'destructive', 
           onPress: () => {
             setAnnotations([]);
-            setSelectedAnnotation(null);
-            
-            // Log analytics event
-            logAnalyticsEvent('annotations_cleared', { 
-              partNumber
-            });
+            setHasDefects(false);
+            setDefectNotes('');
           } 
         }
       ]
     );
-  };
+  }, []);
 
-  // Save annotations and navigate back
-  const saveAnnotations = () => {
-    if (!currentPhoto) {
-      console.error('[DefectHighlightingScreen] No photo data available to save annotations');
-      return;
-    }
+  // Saves the photo with all annotations and metadata
+  const savePhotoWithMetadata = useCallback(async () => {
+    // Track the entire save operation performance
+    setLoading(true);
     
-    // Log analytics event
-    logAnalyticsEvent('annotations_saved', { 
-      partNumber, 
-      annotationCount: annotations.length 
-    });
-    
-    // Create updated photo data with annotations
-    const updatedPhotoData: PhotoData = {
-      ...currentPhoto,
-      annotations: annotations
-    };
-    
-    // Save to database
-    savePhotoToDatabase(updatedPhotoData);
-    
-    // Show success message and navigate back
-    Alert.alert(
-      'Annotations Saved',
-      'Defect annotations have been saved successfully.',
-      [
-        {
-          text: 'OK',
-          onPress: () => {
-            // Navigate back to the previous screen
-            navigation.goBack();
-          }
+    return await trackPerformance('Save photo with annotations', async () => {
+      try {
+        // Validate required data before proceeding
+        if (!photo?.id) {
+          throw new Error('Photo ID is missing');
         }
-      ]
-    );
-  };
 
-  // Save annotations and go directly to take another photo
-  const saveAndTakeAnotherPhoto = async () => {
-    if (!currentPhoto) {
-      console.error('[DefectHighlightingScreen] No photo data available to save annotations');
-      return;
-    }
-    
-    try {
-      // Log analytics event
-      logAnalyticsEvent('annotations_saved_and_continue', { 
-        partNumber, 
-        annotationCount: annotations.length 
-      });
-      
-      // Create updated photo data with annotations
-      const updatedPhotoData: PhotoData = {
-        ...currentPhoto,
-        annotations: annotations
+      // Update the photo data with annotation information
+      const updatedPhoto: PhotoData = {
+        ...photo,
+        annotations: annotations,
+        metadata: {
+          ...photo.metadata,
+          hasDefects,
+          defectSeverity: hasDefects ? defectSeverity.toLowerCase() as 'critical' | 'moderate' | 'minor' : undefined,
+          defectNotes
+        }
       };
       
-      // Save to database
-      await savePhotoToDatabase(updatedPhotoData);
+      // In a real app, we would save this to database or storage
+      console.log('Saving photo with annotations:', updatedPhoto);
       
-      // Navigate directly to photo capture screen
-      navigation.navigate('PhotoCapture', {
-        mode: 'Batch', // Indicate returning to batch mode
-        userId: 'user123', // Pass necessary parameters back
-        orderNumber: currentPhoto.metadata.orderNumber, // Maintain context if available
-        partNumber: currentPhoto.metadata.partNumber, // Maintain context if available
+      // Save to local storage first (for offline capability)
+      // This is where we would implement local database storage
+      // For now, simulate a save operation
+      const saveResult = await new Promise<boolean>((resolve) => {
+        setTimeout(() => resolve(true), 300);
       });
+      
+      if (!saveResult) {
+        throw new Error('Failed to save to local storage');
+      }
+      
+      // Then try to sync with backend if online
+      // This is where we would implement network requests to a backend
+      // For now, simulate a backend sync
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      
+      // Log the event
+      logAnalyticsEvent('photo_annotated', {
+        photoId: photo?.id,
+        annotationsCount: annotations.length,
+        hasDefects
+      });
+      
+      // Navigate back to batch preview screen
+      Alert.alert(
+        'Success',
+        'Photo annotations saved successfully',
+        [{ text: 'OK', onPress: () => navigation.goBack() }]
+      );
     } catch (error) {
-      console.error('[DefectHighlightingScreen] Error saving and continuing:', error);
-      Alert.alert('Error', 'Failed to save photo. Please try again.');
-    }
-  };
-
-  // Simple function to save photo to database (mock implementation)
-  const savePhotoToDatabase = async (photoData: PhotoData) => {
-    try {
-      // In a real app, this would save to a database
-      console.log('[DefectHighlightingScreen] Saving photo with annotations:', photoData);
+      console.error('Error saving annotations:', error);
       
-      // Mock implementation - in a real app, this would be an API call or database operation
-      // For demo purposes, we'll just simulate a delay
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // More detailed error handling
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       
-      // Log success
-      console.log('[DefectHighlightingScreen] Photo saved successfully');
-      
-      // Log analytics event
-      await logAnalyticsEvent('photo_saved', {
-        orderNumber: photoData.metadata.orderNumber,
-        partNumber: photoData.metadata.partNumber,
-        annotationCount: photoData.annotations?.length || 0
+      // Log the error for analytics and debugging
+      logAnalyticsEvent('error', {
+        context: 'DefectHighlightingScreen',
+        action: 'savePhotoWithMetadata',
+        error: errorMessage
       });
       
-    } catch (error: any) {
-      console.error('[DefectHighlightingScreen] Error saving photo:', error);
-      await logErrorToFile(`Error saving photo: ${error.message}`);
-      Alert.alert('Error', 'Failed to save photo. Please try again.');
-    }
-  };
+      Alert.alert(
+        'Error', 
+        'Failed to save annotations. Please try again.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Retry', 
+            onPress: () => savePhotoWithMetadata() 
+          }
+        ]
+      );
+      } finally {
+        setLoading(false);
+      }
+    });
+  }, [photo, annotations, hasDefects, defectSeverity, defectNotes, navigation]);
+
+  // Memoize severity options to prevent unnecessary re-renders
+  const severityOptions = useMemo(() => (
+    <View style={styles.colorPickerContainer}>
+      <Text style={styles.colorPickerLabel}>Select Defect Severity:</Text>
+      <View style={styles.colorPicker}>
+        {Object.entries(DEFECT_SEVERITY_COLORS).map(([severity, color]) => (
+          <TouchableOpacity
+            key={severity}
+            style={[
+              styles.colorOption,
+              { backgroundColor: color },
+              defectSeverity === severity && styles.selectedColorOption
+            ]}
+            onPress={() => {
+              setDefectSeverity(severity as 'Critical' | 'Moderate' | 'Minor' | 'None');
+              setCurrentColor(color);
+            }}
+          >
+            <Text style={styles.colorName}>{severity}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  ), [defectSeverity]);
+
+  // Memoize annotation markers to prevent unnecessary re-renders
+  const annotationMarkers = useMemo(() => (
+    <>
+      {annotations.map((annotation) => (
+        <TouchableOpacity
+          key={annotation.id}
+          style={[
+            styles.annotationMarker,
+            {
+              left: annotation.x - 10,
+              top: annotation.y - 10,
+              backgroundColor: annotation.color,
+              borderColor: COLORS.white
+            }
+          ]}
+          onPress={() => handleAnnotationPress(annotation)}
+        >
+          <Text style={{ color: COLORS.white, fontSize: 10 }}>
+            {annotation.notes ? '✓' : ''}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </>
+  ), [annotations, handleAnnotationPress]);
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.primaryDark} />
+      <StatusBar backgroundColor={COLORS.background} barStyle="dark-content" />
       
-      <View style={styles.header}>
-        <TouchableOpacity 
-          style={styles.backButton} 
-          onPress={() => navigation.goBack()}
-        >
-          <Ionicons name="arrow-back" size={24} color={COLORS.white} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Defect Highlighting</Text>
-        <View style={styles.headerRight} />
-      </View>
-
-      <View style={styles.infoContainer}>
-        <View style={styles.infoRow}>
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Order:</Text>
-            <Text style={styles.infoValue}>{orderNumber}</Text>
-          </View>
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Part:</Text>
-            <Text style={styles.infoValue}>{partNumber}</Text>
-          </View>
-        </View>
-        <View style={styles.infoRow}>
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Time:</Text>
-            <Text style={styles.infoValue}>{new Date(timestamp).toLocaleTimeString()}</Text>
-          </View>
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Status:</Text>
-            <View style={[
-              styles.statusBadge, 
-              { backgroundColor: currentPhoto.metadata.hasDefects ? COLORS.error : COLORS.success }
-            ]}>
-              <Text style={styles.statusText}>
-                {currentPhoto.metadata.hasDefects ? 'Defects' : 'No Defects'}
-              </Text>
-            </View>
-          </View>
-        </View>
-      </View>
-
-      {currentPhoto.metadata.hasDefects ? (
-        <View style={styles.instructionsContainer}>
-          <Ionicons name="information-circle" size={20} color={COLORS.primary} />
-          <Text style={styles.instructions}>
-            Tap on the image to mark defect locations. Use different colors to indicate severity.
-          </Text>
+      {!imageUri ? (
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>No photo available.</Text>
+          <CustomButton 
+            title="Go Back"
+            onPress={() => navigation.goBack()}
+            variant="primary"
+          />
         </View>
       ) : (
-        <View style={styles.noDefectsContainer}>
-          <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
-          <Text style={styles.noDefectsText}>
-            No defects reported for this part. You can still review the image or add annotations if needed.
-          </Text>
-        </View>
-      )}
+        <>
+          {/* Instructions */}
+          <View style={styles.instructionsContainer}>
+            <Ionicons name="information-circle-outline" size={24} color={COLORS.text} />
+            <Text style={styles.instructions}>
+              Tap on the image to mark defects. Select severity and add notes for each marker.
+            </Text>
+          </View>
 
-      <View style={styles.colorPickerContainer}>
-        <Text style={styles.colorPickerLabel}>Select Defect Severity:</Text>
-        <View style={styles.colorPicker}>
-          {DEFECT_COLORS.map(color => (
-            <TouchableOpacity
-              key={color.name}
-              style={[
-                styles.colorOption,
-                { backgroundColor: color.value },
-                selectedColor.name === color.name && styles.selectedColorOption
-              ]}
-              onPress={() => setSelectedColor(color)}
-            >
-              <Text style={styles.colorName}>{color.name}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.imageContainer}>
-        <TouchableOpacity onPress={handleImagePress} activeOpacity={0.9}>
-          <Image source={{ uri }} style={styles.image} resizeMode="contain" />
+          {/* Defect Severity Selector */}
+          {severityOptions}
           
-          {/* Render annotations */}
-          {annotations.map(annotation => (
-            <TouchableOpacity
-              key={annotation.id}
-              style={[
-                styles.annotationMarker,
-                { 
-                  left: parseInt(annotation.pathData.split(' ')[0].substring(1).split(',')[0]) - 10, 
-                  top: parseInt(annotation.pathData.split(' ')[0].substring(1).split(',')[1]) - 10,
-                  backgroundColor: annotation.color,
-                  borderColor: selectedAnnotation?.id === annotation.id ? COLORS.white : 'transparent'
-                }
-              ]}
-              onPress={() => handleAnnotationPress(annotation)}
-            />
-          ))}
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.footer}>
-        <View style={styles.footerInfo}>
-          <Text style={styles.footerText}>
-            {annotations.length} {annotations.length === 1 ? 'annotation' : 'annotations'} added
-          </Text>
-        </View>
-        <View style={styles.footerButtons}>
-          <CustomButton 
-            title="Clear All" 
-            onPress={clearAllAnnotations}
-            variant="outline"
-            icon={<Ionicons name="trash" size={20} color={COLORS.primary} />}
-            style={styles.footerButton}
-            disabled={annotations.length === 0}
-          />
-          <CustomButton 
-            title="Save" 
-            onPress={saveAnnotations}
-            variant="primary"
-            icon={<Ionicons name="checkmark-circle" size={20} color={COLORS.white} />}
-            style={[styles.footerButton, { flex: 1 }]}
-          />
-          <CustomButton 
-            title="Save & Take Another" 
-            onPress={saveAndTakeAnotherPhoto}
-            variant="primary"
-            icon={<Ionicons name="camera" size={20} color={COLORS.white} />}
-            style={[styles.footerButton, { flex: 1.5 }]}
-          />
-        </View>
-      </View>
-
-      {/* Notes Modal */}
-      <Modal
-        visible={showNotesModal}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setShowNotesModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                Defect Notes ({selectedAnnotation?.severity || 'Unknown'})
+          {/* Photo with Annotations */}
+          <View style={styles.imageContainer}>
+            {!isLoaded ? (
+              <ActivityIndicator size="large" color={COLORS.primary} style={styles.imageLoadingIndicator} />
+            ) : (
+              <>
+                <TouchableWithoutFeedback onPress={handleImagePress}>
+                  <Image
+                    ref={imageRef}
+                    source={{ uri: imageUri }}
+                    style={[styles.image, { aspectRatio }]}
+                    resizeMode="contain"
+                  />
+                </TouchableWithoutFeedback>
+                
+                {/* Annotation Markers */}
+                {annotationMarkers}
+              </>
+            )}
+          </View>
+          
+          {/* Footer */}
+          <View style={styles.footer}>
+            <View style={styles.footerInfo}>
+              <Text style={styles.footerText}>
+                {annotations.length} annotation{annotations.length !== 1 ? 's' : ''} marked
               </Text>
-              <TouchableOpacity onPress={() => setShowNotesModal(false)}>
-                <Ionicons name="close" size={24} color={COLORS.grey700} />
-              </TouchableOpacity>
             </View>
             
-            <TextInput
-              style={styles.notesInput}
-              multiline
-              value={defectNotes}
-              onChangeText={setDefectNotes}
-              placeholder="Enter notes about this defect..."
-              placeholderTextColor={COLORS.grey500}
-            />
-            
-            <View style={styles.modalButtons}>
-              <CustomButton 
-                title="Cancel" 
-                onPress={() => setShowNotesModal(false)}
-                variant="outline"
-                style={styles.modalButton}
+            <View style={styles.footerButtons}>
+              <CustomButton
+                title="Clear All"
+                onPress={clearAllAnnotations}
+                variant="danger"
+                icon={<Ionicons name="trash-outline" size={18} color={COLORS.white} />}
+                style={styles.footerButton}
+                disabled={annotations.length === 0}
               />
-              <CustomButton 
-                title="Save Notes" 
-                onPress={saveAnnotationNotes}
+              
+              <CustomButton
+                title="Save & Continue"
+                onPress={savePhotoWithMetadata}
                 variant="primary"
-                style={styles.modalButton}
+                icon={<Ionicons name="checkmark-circle-outline" size={18} color={COLORS.white} />}
+                style={styles.footerButton}
               />
             </View>
           </View>
-        </View>
-      </Modal>
+          
+          {/* Notes Modal */}
+          <Modal
+            visible={showNotesModal}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setShowNotesModal(false)}
+          >
+            <KeyboardAvoidingView 
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={styles.modalOverlay}
+            >
+              <TouchableWithoutFeedback onPress={() => setShowNotesModal(false)}>
+                <View style={styles.modalOverlay}>
+                  <TouchableWithoutFeedback onPress={e => e.stopPropagation()}>
+                    <View style={styles.modalContent}>
+                      <View style={styles.modalHeader}>
+                        <Text style={styles.modalTitle}>Defect Details</Text>
+                        <TouchableOpacity onPress={() => setShowNotesModal(false)}>
+                          <Ionicons name="close-circle-outline" size={24} color={COLORS.text} />
+                        </TouchableOpacity>
+                      </View>
+                      
+                      <TextInput
+                        style={styles.notesInput}
+                        placeholder="Add notes about this defect..."
+                        multiline
+                        value={selectedAnnotation?.notes || ''}
+                        onChangeText={(text) => {
+                          if (selectedAnnotation) {
+                            setSelectedAnnotation({
+                              ...selectedAnnotation,
+                              notes: text
+                            });
+                          }
+                        }}
+                        autoFocus
+                        returnKeyType="done"
+                        blurOnSubmit
+                        onSubmitEditing={() => saveAnnotationNotes(selectedAnnotation?.notes || '')}
+                      />
+                      
+                      <View style={styles.modalButtons}>
+                        <CustomButton
+                          title="Cancel"
+                          onPress={() => setShowNotesModal(false)}
+                          variant="secondary"
+                          style={styles.modalButton}
+                        />
+                        <CustomButton
+                          title="Save Details"
+                          onPress={() => saveAnnotationNotes(selectedAnnotation?.notes || '')}
+                          variant="primary"
+                          style={styles.modalButton}
+                        />
+                      </View>
+                    </View>
+                  </TouchableWithoutFeedback>
+                </View>
+              </TouchableWithoutFeedback>
+            </KeyboardAvoidingView>
+          </Modal>
+          
+          {/* Loading Overlay */}
+          {loading && (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={styles.loadingText}>Saving annotations...</Text>
+            </View>
+          )}
+        </>
+      )}
     </SafeAreaView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  header: {
-    backgroundColor: COLORS.primary,
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: SPACING.medium,
+    fontSize: FONTS.large,
+    color: COLORS.text,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: SPACING.medium,
     paddingHorizontal: SPACING.medium,
-    ...SHADOWS.medium,
-  },
-  backButton: {
-    padding: SPACING.small,
-  },
-  headerTitle: {
-    color: COLORS.white,
-    fontSize: FONTS.large,
-    fontWeight: FONTS.bold,
-  },
-  headerRight: {
-    width: 40, // To balance the header
-  },
-  infoContainer: {
+    paddingVertical: SPACING.small,
     backgroundColor: COLORS.white,
-    padding: SPACING.medium,
     ...SHADOWS.small,
   },
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: SPACING.small,
+  headerTitle: {
+    fontSize: FONTS.large,
+    fontWeight: FONTS.bold,
+    color: COLORS.text,
   },
-  infoItem: {
-    flex: 1,
-    flexDirection: 'row',
+  backButton: {
+    width: 40, 
     alignItems: 'center',
   },
-  infoLabel: {
-    fontSize: FONTS.medium,
-    fontWeight: FONTS.semiBold,
-    color: COLORS.text,
-    marginRight: SPACING.small,
-  },
-  infoValue: {
-    fontSize: FONTS.medium,
-    color: COLORS.text,
-  },
-  statusBadge: {
-    paddingHorizontal: SPACING.small,
-    paddingVertical: SPACING.tiny,
-    borderRadius: BORDER_RADIUS.small,
-  },
-  statusText: {
-    color: COLORS.white,
-    fontSize: FONTS.small,
-    fontWeight: FONTS.semiBold,
+  saveButton: {
+    width: 40, // To balance the header
   },
   instructionsContainer: {
     backgroundColor: COLORS.primaryLight,
@@ -478,18 +520,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   instructions: {
-    color: COLORS.text,
-    fontSize: FONTS.small,
-    marginLeft: SPACING.small,
-    flex: 1,
-  },
-  noDefectsContainer: {
-    backgroundColor: COLORS.secondary,
-    padding: SPACING.medium,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  noDefectsText: {
     color: COLORS.text,
     fontSize: FONTS.small,
     marginLeft: SPACING.small,
@@ -540,6 +570,11 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: '100%',
+  },
+  imageLoadingIndicator: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   annotationMarker: {
     position: 'absolute',
@@ -617,3 +652,5 @@ const styles = StyleSheet.create({
     marginHorizontal: SPACING.tiny,
   },
 });
+
+export default DefectHighlightingScreen;

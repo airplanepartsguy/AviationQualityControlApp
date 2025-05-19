@@ -5,6 +5,8 @@ export interface AnnotationData {
   notes?: string;
   severity: 'Critical' | 'Moderate' | 'Minor' | 'None';
   color: string; // e.g., '#D32F2F', '#FFA000', '#388E3C'
+  x: number; // X coordinate position of the annotation
+  y: number; // Y coordinate position of the annotation
 }
 
 // Metadata associated with a captured photo
@@ -14,6 +16,9 @@ export interface PhotoMetadata {
   latitude?: number;
   longitude?: number;
   deviceModel?: string; // Example additional metadata
+  hasDefects?: boolean; // Whether defects were identified
+  defectSeverity?: 'critical' | 'moderate' | 'minor'; // Severity level of defects
+  defectNotes?: string; // Any notes about the defects
 }
 
 // Represents a single photo captured and potentially annotated
@@ -68,6 +73,18 @@ export interface InspectionData {
   date: string;
 }
 
+// Location data structure for photo metadata
+export interface LocationData {
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  accuracy: number | null;
+  altitudeAccuracy: number | null;
+  heading: number | null;
+  speed: number | null;
+  timestamp: number;
+}
+
 // --- Offline Sync Queue Task ---
 export interface SyncTask {
   id: string;
@@ -77,4 +94,29 @@ export interface SyncTask {
   attempts: number;
   lastAttempted?: string;
   error?: string;
+}
+
+// --- Sync Queue Status ---
+export interface QueueStatus {
+  pending: number;
+  processing: number;
+  failed: number;
+  completed: number;
+  totalItems: number;
+  lastSyncAttempt: string | null;
+  isOnline: boolean;
+  storageUsed: {
+    bytes: number;
+    megabytes: string;
+    percentageOfQuota: string;
+  };
+}
+
+// --- Sync Result ---
+export interface SyncResult {
+  success: boolean;
+  message: string;
+  recordId?: string; // Mock Salesforce record ID
+  timestamp: string;
+  retryCount?: number; // How many retry attempts were made
 }

@@ -22,7 +22,7 @@ const { width, height } = Dimensions.get('window');
 const AnnotationScreen: React.FC = () => {
   const route = useRoute<AnnotationScreenRouteProp>();
   const navigation = useNavigation<AnnotationScreenNavigationProp>();
-  const { photoId, photoUri, batchId } = route.params;
+  const { photoId, photoUri, batchId, returnToBatch } = route.params;
 
   // State for annotations (paths, colors, etc.) - structure depends on drawing library
   const [currentAnnotations, setCurrentAnnotations] = useState<AnnotationData[]>([]);
@@ -47,7 +47,19 @@ const AnnotationScreen: React.FC = () => {
         'Are you sure you want to discard annotations for this photo?',
         [
             { text: 'Keep Annotating', style: 'cancel' },
-            { text: 'Discard', style: 'destructive', onPress: () => navigation.goBack() },
+            { 
+                text: 'Discard', 
+                style: 'destructive', 
+                onPress: () => {
+                    // If returnToBatch is true, navigate back to PhotoCapture with the batch context
+                    if (returnToBatch) {
+                        navigation.navigate('PhotoCapture', { batchId });
+                    } else {
+                        // Otherwise just go back to previous screen
+                        navigation.goBack();
+                    }
+                } 
+            },
         ]
     );
   };

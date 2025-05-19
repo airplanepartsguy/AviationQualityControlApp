@@ -10,6 +10,7 @@ import Ionicons from '@expo/vector-icons/Ionicons'; // For tab icons
 import LoginScreen from './src/screens/LoginScreen'; // Import LoginScreen
 import DashboardScreen from './src/screens/DashboardScreen'; 
 import PhotoCaptureScreen from './src/screens/PhotoCaptureScreen';
+import DefectHighlightingScreen from './src/screens/DefectHighlightingScreen';
 import AnnotationScreen from './src/screens/AnnotationScreen'; 
 import BatchPreviewScreen from './src/screens/BatchPreviewScreen'; 
 import PDFGenerationScreen from './src/screens/PDFGenerationScreen';
@@ -144,6 +145,11 @@ function RootNavigator() {
             name="PhotoCapture" 
             component={PhotoCaptureScreen} 
             options={{ title: 'Capture Photo' }} // Keep header for stack screens
+          />
+          <RootStack.Screen 
+            name="DefectHighlighting" 
+            component={DefectHighlightingScreen} 
+            options={{ title: 'Highlight Defects' }} 
           />
           <RootStack.Screen 
             name="Annotation" 

@@ -1,35 +1,68 @@
-import db from './databaseService';
-import { AnalyticsEvent, AnalyticsEventName } from '../types/data';
 import * as FileSystem from 'expo-file-system';
 
-const LOG_FILE_URI = FileSystem.documentDirectory + 'error_log.txt';
+// Constants
+const ERROR_LOG_FILE_URI = `${FileSystem.documentDirectory}error_logs.txt`;
+const ANALYTICS_LOG_FILE_URI = `${FileSystem.documentDirectory}analytics_logs.txt`;
 
 /**
- * Logs an analytics event to the SQLite database.
+ * Logs an analytics event to the console and eventually to a file
+ * @param eventType The type of the event to log
+ * @param eventData Additional data to log with the event
  */
-export const logAnalyticsEvent = async (eventName: AnalyticsEventName, details: Record<string, any> = {}): Promise<void> => {
-  const timestamp = new Date().toISOString();
-  const detailsString = JSON.stringify(details);
-
-  return new Promise((resolve, reject) => {
-    db.transaction((tx: any) => {
-      tx.executeSql(
-        'INSERT INTO analytics_events (eventName, timestamp, details) VALUES (?, ?, ?);',
-        [eventName, timestamp, detailsString],
-        (_tx: any, _result: any) => {
-          console.log(`[Analytics] Logged event: ${eventName}`, details);
-          resolve();
-        },
-        (_tx: any, error: any): boolean => {
-          console.error(`[Analytics] Error logging event ${eventName}:`, error);
-          // Attempt to log the logging error itself to the file as a fallback
-          logErrorToFile(`Failed to log analytics event ${eventName} to DB: ${error?.message}`);
-          reject(error);
-          return false; // Rollback transaction
-        }
-      );
+export const logAnalyticsEvent = async (
+  eventType: string,
+  eventData: Record<string, any> = {}
+): Promise<void> => {
+  try {
+    const timestamp = new Date().toISOString();
+    
+    // Clean up eventData by removing undefined values
+    const cleanEventData = Object.entries(eventData).reduce((acc, [key, value]) => {
+      if (value !== undefined) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {} as Record<string, any>);
+    
+    // In a real app, this would insert into a database
+    // For now, just log to console
+    console.log(`[Analytics] Logged event: ${eventType}`, {
+      timestamp,
+      ...cleanEventData
     });
-  });
+    
+    // Log to analytics file instead of error file
+    await logAnalyticsToFile(eventType, cleanEventData);
+  } catch (error) {
+    console.error(`[Analytics] Failed to log event ${eventType}:`, error);
+    await logErrorToFile(`Failed to log analytics event ${eventType}`, error instanceof Error ? error : new Error(String(error)));
+  }
+};
+
+/**
+ * Logs analytics events to a dedicated analytics log file
+ * Separates analytics from actual errors
+ */
+const logAnalyticsToFile = async (eventType: string, eventData: Record<string, any>): Promise<void> => {
+  try {
+    const timestamp = new Date().toISOString();
+    const logEntry = `${timestamp}: ${eventType} - ${JSON.stringify(eventData, null, 2)}\n`;
+
+    // Ensure file exists (create if not)
+    const fileInfo = await FileSystem.getInfoAsync(ANALYTICS_LOG_FILE_URI);
+    if (!fileInfo.exists) {
+      await FileSystem.writeAsStringAsync(ANALYTICS_LOG_FILE_URI, '', { encoding: FileSystem.EncodingType.UTF8 });
+      console.log(`[Analytics] Created analytics log file at ${ANALYTICS_LOG_FILE_URI}`);
+    }
+
+    // Append the analytics event
+    await FileSystem.writeAsStringAsync(ANALYTICS_LOG_FILE_URI, logEntry, {
+      encoding: FileSystem.EncodingType.UTF8,
+      append: true, // Use append option
+    } as any); // Add type assertion to bypass WritingOptions check
+  } catch (err) {
+    console.error('[Analytics] Failed to write analytics log to file:', err);
+  }
 };
 
 /**
@@ -46,14 +79,14 @@ export const logErrorToFile = async (message: string, error?: Error): Promise<vo
 
   try {
     // Ensure file exists (create if not)
-    const fileInfo = await FileSystem.getInfoAsync(LOG_FILE_URI);
+    const fileInfo = await FileSystem.getInfoAsync(ERROR_LOG_FILE_URI);
     if (!fileInfo.exists) {
-      await FileSystem.writeAsStringAsync(LOG_FILE_URI, '', { encoding: FileSystem.EncodingType.UTF8 });
-      console.log(`[ErrorLog] Created log file at ${LOG_FILE_URI}`);
+      await FileSystem.writeAsStringAsync(ERROR_LOG_FILE_URI, '', { encoding: FileSystem.EncodingType.UTF8 });
+      console.log(`[ErrorLog] Created log file at ${ERROR_LOG_FILE_URI}`);
     }
 
     // Append the error message
-    await FileSystem.writeAsStringAsync(LOG_FILE_URI, logEntry, {
+    await FileSystem.writeAsStringAsync(ERROR_LOG_FILE_URI, logEntry, {
       encoding: FileSystem.EncodingType.UTF8,
       append: true, // Use append option
     } as any); // Add type assertion to bypass WritingOptions check
@@ -68,60 +101,23 @@ export const logErrorToFile = async (message: string, error?: Error): Promise<vo
 };
 
 /**
- * Logs an error to the SQLite database.
+ * Mock function for logging errors to a database
+ * In a real app, this would use SQLite or another database
  */
-const logErrorToDb = (timestamp: string, message: string, stackTrace?: string): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    db.transaction((tx: any) => {
-      tx.executeSql(
-        'INSERT INTO error_logs (timestamp, message, stackTrace) VALUES (?, ?, ?);',
-        [timestamp, message, stackTrace ?? null],
-        () => { console.log('[ErrorLog] Logged error to DB.'); resolve(); },
-        (_tx: any, error: any): boolean => {
-          console.error('[ErrorLog] Failed to log error to DB:', error);
-          reject(error);
-          return false;
-        }
-      );
-    });
-  });
+const logErrorToDb = async (timestamp: string, message: string, stackTrace?: string): Promise<void> => {
+  console.log('[ErrorLog] Would log to DB:', { timestamp, message, stackTrace });
+  // No actual DB operations in this mock version
 };
 
 /**
- * Retrieves all analytics events from the database.
- * (For potential use in AnalyticsScreen)
+ * Mock function that would retrieve analytics events from a database
+ * In a real app, this would fetch from SQLite or another database
  */
-export const getAnalyticsEvents = (): Promise<AnalyticsEvent[]> => {
-  return new Promise((resolve, reject) => {
-    db.transaction((tx: any) => {
-      tx.executeSql(
-        'SELECT * FROM analytics_events ORDER BY timestamp DESC;',
-        [],
-        (_tx: any, { rows }: any) => {
-          const events: AnalyticsEvent[] = [];
-          for (let i = 0; i < rows.length; i++) {
-            const item = rows.item(i);
-            try {
-              events.push({
-                id: item.id,
-                eventName: item.eventName as AnalyticsEventName,
-                timestamp: item.timestamp,
-                details: item.details ? JSON.parse(item.details) : {},
-              });
-            } catch (e) {
-              console.warn('[Analytics] Failed to parse event details:', e, item);
-            }
-          }
-          resolve(events);
-        },
-        (_tx: any, error: any): boolean => {
-          console.error('[Analytics] Failed to retrieve events:', error);
-          reject(error);
-          return false;
-        }
-      );
-    });
-  });
+export const getAnalyticsEvents = async (): Promise<any[]> => {
+  // This is a mock implementation that returns empty array
+  // In a real app, this would query the database
+  console.log('[Analytics] Would fetch events from database');
+  return [];
 };
 
 /**
@@ -130,11 +126,11 @@ export const getAnalyticsEvents = (): Promise<AnalyticsEvent[]> => {
  */
 export const getErrorLogsFromFile = async (): Promise<string> => {
   try {
-    const fileInfo = await FileSystem.getInfoAsync(LOG_FILE_URI);
+    const fileInfo = await FileSystem.getInfoAsync(ERROR_LOG_FILE_URI);
     if (!fileInfo.exists) {
       return 'Error log file does not exist.';
     }
-    const content = await FileSystem.readAsStringAsync(LOG_FILE_URI, {
+    const content = await FileSystem.readAsStringAsync(ERROR_LOG_FILE_URI, {
       encoding: FileSystem.EncodingType.UTF8,
     });
     return content || 'Error log file is empty.';
@@ -142,4 +138,114 @@ export const getErrorLogsFromFile = async (): Promise<string> => {
     console.error('[ErrorLog] Failed to read error log file:', error);
     return `Failed to read log file: ${error instanceof Error ? error.message : String(error)}`;
   }
+};
+
+/**
+ * Generates mock analytics data for the AnalyticsScreen.
+ * In a production app, this would fetch real data from the database.
+ */
+export const getAnalyticsData = async (timeRange: 'day' | 'week' | 'month'): Promise<any> => {
+  // Simulate network delay
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
+  // Generate dates for the chart based on time range
+  const dates = generateDateLabels(timeRange);
+  
+  // Generate random data for each date
+  const photoCountsByDate = dates.map(() => Math.floor(Math.random() * 10) + 1);
+  const dateLabels = dates.map(date => date.split('T')[0].substring(5)); // Format as MM-DD
+  
+  // Generate random defect counts
+  const criticalDefects = Math.floor(Math.random() * 15) + 5;
+  const moderateDefects = Math.floor(Math.random() * 25) + 10;
+  const minorDefects = Math.floor(Math.random() * 35) + 15;
+  
+  // Generate random scan stats
+  const totalScans = Math.floor(Math.random() * 100) + 50;
+  const successfulScans = Math.floor(totalScans * (0.7 + Math.random() * 0.25)); // 70-95% success rate
+  const failedScans = totalScans - successfulScans;
+  
+  // Generate PDF stats
+  const generatedPdfs = Math.floor(Math.random() * 40) + 10;
+  const sharedPdfs = Math.floor(generatedPdfs * (0.5 + Math.random() * 0.3)); // 50-80% share rate
+  
+  // Generate sync stats
+  const attemptedSyncs = Math.floor(Math.random() * 50) + 20;
+  const successfulSyncs = Math.floor(attemptedSyncs * (0.6 + Math.random() * 0.35)); // 60-95% success rate
+  const failedSyncs = Math.floor((attemptedSyncs - successfulSyncs) * 0.7); // Some failed syncs
+  const pendingSyncs = attemptedSyncs - successfulSyncs - failedSyncs; // Remaining are pending
+  
+  return {
+    photoStats: {
+      total: photoCountsByDate.reduce((sum, count) => sum + count, 0),
+      withDefects: criticalDefects + moderateDefects + minorDefects,
+      withoutDefects: photoCountsByDate.reduce((sum, count) => sum + count, 0) - (criticalDefects + moderateDefects + minorDefects),
+      byDate: dates.map((date, index) => ({ date, count: photoCountsByDate[index] })),
+    },
+    defectStats: {
+      critical: criticalDefects,
+      moderate: moderateDefects,
+      minor: minorDefects,
+    },
+    scanStats: {
+      total: totalScans,
+      successful: successfulScans,
+      failed: failedScans,
+      successRate: Math.round((successfulScans / totalScans) * 100),
+    },
+    pdfStats: {
+      generated: generatedPdfs,
+      averageGenerationTime: Math.floor(Math.random() * 1000) + 500, // 500-1500ms
+      shared: sharedPdfs,
+    },
+    syncStats: {
+      attempted: attemptedSyncs,
+      successful: successfulSyncs,
+      failed: failedSyncs,
+      pending: pendingSyncs,
+    },
+  };
+};
+
+/**
+ * Helper function to generate date labels for charts based on time range
+ */
+const generateDateLabels = (timeRange: 'day' | 'week' | 'month'): string[] => {
+  const now = new Date();
+  const dates: string[] = [];
+  
+  let numDays: number;
+  let interval: number;
+  
+  switch (timeRange) {
+    case 'day':
+      numDays = 24; // 24 hours
+      interval = 1; // 1 hour intervals
+      for (let i = 0; i < numDays; i += interval) {
+        const date = new Date(now);
+        date.setHours(date.getHours() - i);
+        dates.unshift(date.toISOString());
+      }
+      break;
+    case 'week':
+      numDays = 7; // 7 days
+      interval = 1; // 1 day intervals
+      for (let i = 0; i < numDays; i += interval) {
+        const date = new Date(now);
+        date.setDate(date.getDate() - i);
+        dates.unshift(date.toISOString());
+      }
+      break;
+    case 'month':
+      numDays = 30; // 30 days
+      interval = 3; // 3 day intervals
+      for (let i = 0; i < numDays; i += interval) {
+        const date = new Date(now);
+        date.setDate(date.getDate() - i);
+        dates.unshift(date.toISOString());
+      }
+      break;
+  }
+  
+  return dates;
 };
