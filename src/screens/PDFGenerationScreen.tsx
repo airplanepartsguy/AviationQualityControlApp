@@ -260,34 +260,69 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
       
       console.log(`Preparing to share PDF: ${pdfUri} with name: ${displayName}`);
       
-      // Try using React Native's Share API which might handle filenames better
-      // First, make sure the URI is properly formatted for sharing
-      const fileUri = Platform.OS === 'android' ? pdfUri : pdfUri.replace('file://', '');
-      
-      // Use React Native's Share API
-      const result = await Share.share({
-        title: displayName,
-        message: displayName, // Used as the filename on some platforms
-        url: Platform.OS === 'ios' ? fileUri : `file://${fileUri}`,
-      }, {
-        subject: displayName, // Used for email subject
-        dialogTitle: `Share ${displayName}`,
-        // On Android, we can specify where to place the file
-        excludedActivityTypes: Platform.OS === 'ios' ? [] : undefined,
-      });
-      
-      console.log(`PDF shared with result:`, result);
+      if (Platform.OS === 'ios') {
+        // On iOS, we need a special approach to ensure the filename is preserved
+        // First, copy the file to the documents directory with our desired name
+        const documentsDir = FileSystem.documentDirectory;
+        const targetPath = `${documentsDir}${displayName}`;
+        
+        try {
+          // Check if the file already exists and remove it if it does
+          const fileInfo = await FileSystem.getInfoAsync(targetPath);
+          if (fileInfo.exists) {
+            await FileSystem.deleteAsync(targetPath, { idempotent: true });
+          }
+          
+          // Copy the file to the documents directory with our custom name
+          await FileSystem.copyAsync({
+            from: pdfUri,
+            to: targetPath
+          });
+          
+          console.log(`File copied to: ${targetPath}`);
+          
+          // Now share the file with the custom name
+          const result = await Sharing.shareAsync(targetPath, {
+            UTI: 'com.adobe.pdf',
+            mimeType: 'application/pdf',
+            dialogTitle: displayName
+          });
+          
+          console.log(`PDF shared with result:`, result);
+        } catch (copyError) {
+          console.error('Error copying file:', copyError);
+          // Fall back to sharing the original file
+          await Sharing.shareAsync(pdfUri, {
+            UTI: 'com.adobe.pdf',
+            mimeType: 'application/pdf',
+            dialogTitle: displayName
+          });
+        }
+      } else {
+        // For Android, use the standard sharing approach
+        const fileUri = pdfUri.replace('file://', '');
+        
+        // Use React Native's Share API
+        const result = await Share.share({
+          title: displayName,
+          message: displayName, // Used as the filename on some platforms
+          url: `file://${fileUri}`,
+        }, {
+          subject: displayName, // Used for email subject
+          dialogTitle: `Share ${displayName}`,
+        });
+        
+        console.log(`PDF shared with result:`, result);
+      }
       
       // Show a helpful message about the PDF
-      if (result.action !== Share.dismissedAction) {
-        setTimeout(() => {
-          Alert.alert(
-            'PDF Shared',
-            `Your PDF "${displayName}" has been shared successfully.`,
-            [{ text: 'OK' }]
-          );
-        }, 1000);
-      }
+      setTimeout(() => {
+        Alert.alert(
+          'PDF Shared',
+          `Your PDF "${displayName}" has been shared successfully.`,
+          [{ text: 'OK' }]
+        );
+      }, 1000);
     } catch (error) {
       console.error('Error opening PDF:', error);
       Alert.alert('Error', 'Could not open the PDF file');

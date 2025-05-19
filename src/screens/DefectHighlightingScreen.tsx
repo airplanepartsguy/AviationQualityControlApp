@@ -39,6 +39,17 @@ const DEFECT_SEVERITY_COLORS = {
   'None': '#9E9E9E',     // Grey
 };
 
+// Drawing tool types
+type DrawingTool = 'pointer' | 'circle' | 'rectangle' | 'arrow' | 'freehand' | 'text';
+type DrawingMode = 'draw' | 'select' | 'erase';
+
+// Line thickness options
+const LINE_THICKNESS = {
+  thin: 2,
+  medium: 4,
+  thick: 6
+};
+
 /**
  * DefectHighlightingScreen Component
  * 
@@ -62,6 +73,18 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
   const [hasDefects, setHasDefects] = useState<boolean>(false);
   const [defectSeverity, setDefectSeverity] = useState<'Critical' | 'Moderate' | 'Minor' | 'None'>('Moderate');
   const [defectNotes, setDefectNotes] = useState<string>('');
+  
+  // Drawing tool state
+  const [currentTool, setCurrentTool] = useState<DrawingTool>('pointer');
+  const [drawingMode, setDrawingMode] = useState<DrawingMode>('draw');
+  const [lineThickness, setLineThickness] = useState<number>(LINE_THICKNESS.medium);
+  const [isDrawing, setIsDrawing] = useState<boolean>(false);
+  const [currentPath, setCurrentPath] = useState<string>('');
+  const [paths, setPaths] = useState<Array<{id: string, path: string, color: string, thickness: number, tool: DrawingTool}>>([]);
+  const [textAnnotations, setTextAnnotations] = useState<Array<{id: string, text: string, x: number, y: number, color: string}>>([]);
+  const [showTextInput, setShowTextInput] = useState<boolean>(false);
+  const [textInputPosition, setTextInputPosition] = useState<{x: number, y: number}>({x: 0, y: 0});
+  const [textInputValue, setTextInputValue] = useState<string>('');
   
   // State for annotations
   const [annotations, setAnnotations] = useState<AnnotationData[]>([]);
@@ -103,9 +126,169 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
     }
   }, [imageError]);
 
-  // Handles when user taps on the image to create a new annotation
+  // Handle start of drawing on the image
+  const handleDrawStart = useCallback((event: GestureResponderEvent) => {
+    if (!imageUri || currentTool === 'pointer') return;
+    
+    const { locationX, locationY } = event.nativeEvent;
+    setIsDrawing(true);
+    
+    // Initialize path based on selected tool
+    let initialPath = '';
+    
+    switch (currentTool) {
+      case 'freehand':
+        initialPath = `M ${locationX} ${locationY}`;
+        break;
+      case 'circle':
+      case 'rectangle':
+      case 'arrow':
+        // Just store the starting point for shapes
+        initialPath = `${locationX},${locationY}`;
+        break;
+      case 'text':
+        // For text tool, show text input at tap location
+        setTextInputPosition({ x: locationX, y: locationY });
+        setShowTextInput(true);
+        setIsDrawing(false); // Not actually drawing for text
+        return;
+    }
+    
+    setCurrentPath(initialPath);
+  }, [imageUri, currentTool]);
+  
+  // Handle drawing movement
+  const handleDrawMove = useCallback((event: GestureResponderEvent) => {
+    if (!isDrawing || !imageUri) return;
+    
+    const { locationX, locationY } = event.nativeEvent;
+    
+    // Update path based on selected tool
+    switch (currentTool) {
+      case 'freehand':
+        setCurrentPath(prev => `${prev} L ${locationX} ${locationY}`);
+        break;
+      // For shapes, we'll update the preview in the render function
+      // using the initial point and current point
+    }
+  }, [isDrawing, imageUri, currentTool]);
+  
+  // Handle end of drawing
+  const handleDrawEnd = useCallback(() => {
+    if (!isDrawing || !imageUri || !currentPath) {
+      setIsDrawing(false);
+      return;
+    }
+    
+    // Create a unique ID for this drawing
+    const uniqueId = `drawing_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Finalize the path based on the tool
+    let finalPath = currentPath;
+    
+    // For shapes, we need to construct the complete SVG path
+    if (currentTool !== 'freehand') {
+      const [startX, startY] = currentPath.split(',').map(Number);
+      const previewPath = getShapePreviewPath(startX, startY, currentTool);
+      finalPath = previewPath;
+    }
+    
+    // Add the new path to paths array
+    setPaths(prev => [
+      ...prev, 
+      {
+        id: uniqueId,
+        path: finalPath,
+        color: currentColor,
+        thickness: lineThickness,
+        tool: currentTool
+      }
+    ]);
+    
+    // Reset current path and drawing state
+    setCurrentPath('');
+    setIsDrawing(false);
+    setHasDefects(true); // Mark that there are defects on the image
+  }, [isDrawing, imageUri, currentPath, currentTool, currentColor, lineThickness]);
+  
+  // Helper function to get preview path for shapes
+  const getShapePreviewPath = useCallback((startX: number, startY: number, tool: DrawingTool) => {
+    // This would be called during render to show shape preview
+    // or when finalizing a shape
+    if (!isDrawing || !currentPath) return '';
+    
+    // For actual implementation, we'd use the current mouse/touch position
+    // Here we'll just use a placeholder end position for the example
+    const endX = startX + 100;
+    const endY = startY + 100;
+    
+    switch (tool) {
+      case 'circle':
+        const radius = Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2));
+        return `M ${startX} ${startY} m -${radius} 0 a ${radius} ${radius} 0 1 0 ${radius*2} 0 a ${radius} ${radius} 0 1 0 -${radius*2} 0`;
+      
+      case 'rectangle':
+        return `M ${startX} ${startY} L ${endX} ${startY} L ${endX} ${endY} L ${startX} ${endY} Z`;
+      
+      case 'arrow':
+        // Simple arrow implementation
+        const arrowHeadSize = 10;
+        const angle = Math.atan2(endY - startY, endX - startX);
+        const arrowPoint1X = endX - arrowHeadSize * Math.cos(angle - Math.PI/6);
+        const arrowPoint1Y = endY - arrowHeadSize * Math.sin(angle - Math.PI/6);
+        const arrowPoint2X = endX - arrowHeadSize * Math.cos(angle + Math.PI/6);
+        const arrowPoint2Y = endY - arrowHeadSize * Math.sin(angle + Math.PI/6);
+        
+        return `M ${startX} ${startY} L ${endX} ${endY} M ${endX} ${endY} L ${arrowPoint1X} ${arrowPoint1Y} M ${endX} ${endY} L ${arrowPoint2X} ${arrowPoint2Y}`;
+      
+      default:
+        return '';
+    }
+  }, [isDrawing, currentPath]);
+  
+  // Handle text annotation submission
+  const handleTextSubmit = useCallback((text: string) => {
+    if (!text.trim() || !imageUri) return;
+    
+    // Create a unique ID for this text annotation
+    const uniqueId = `text_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Add the new text annotation
+    setTextAnnotations(prev => [
+      ...prev,
+      {
+        id: uniqueId,
+        text,
+        x: textInputPosition.x,
+        y: textInputPosition.y,
+        color: currentColor
+      }
+    ]);
+    
+    // Reset text input state
+    setShowTextInput(false);
+    setTextInputValue('');
+    setHasDefects(true); // Mark that there are defects on the image
+  }, [imageUri, textInputPosition, currentColor]);
+  
+  // Handle tool selection
+  const handleToolSelect = useCallback((tool: DrawingTool) => {
+    setCurrentTool(tool);
+    // Reset any active drawing
+    setIsDrawing(false);
+    setCurrentPath('');
+    setShowTextInput(false);
+  }, []);
+  
+  // Handle line thickness selection
+  const handleThicknessSelect = useCallback((thickness: number) => {
+    setLineThickness(thickness);
+  }, []);
+  
+  // Legacy annotation handling - kept for backward compatibility
   const handleImagePress = useCallback((event: GestureResponderEvent) => {
     if (!imageUri) return;
+    if (currentTool !== 'pointer') return; // Only handle in pointer mode
     
     // Get touch coordinates relative to image
     const { locationX, locationY } = event.nativeEvent;
@@ -132,7 +315,7 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
     
     // Show notes modal for new annotation
     setShowNotesModal(true);
-  }, [imageUri, currentColor, defectSeverity]);
+  }, [imageUri, currentColor, defectSeverity, currentTool]);
 
   // Handles when user taps on an existing annotation
   const handleAnnotationPress = useCallback((annotation: AnnotationData) => {
@@ -362,6 +545,92 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
                   />
                 </TouchableWithoutFeedback>
                 
+                {/* Drawing Tools Toolbar */}
+                <View style={styles.toolbarContainer}>
+                  <TouchableOpacity 
+                    style={[styles.toolButton, currentTool === 'pointer' && styles.activeToolButton]}
+                    onPress={() => handleToolSelect('pointer')}
+                  >
+                    <Ionicons name="finger-print-outline" size={24} color={currentTool === 'pointer' ? COLORS.primary : COLORS.text} />
+                    <Text style={styles.toolText}>Select</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.toolButton, currentTool === 'freehand' && styles.activeToolButton]}
+                    onPress={() => handleToolSelect('freehand')}
+                  >
+                    <Ionicons name="pencil" size={24} color={currentTool === 'freehand' ? COLORS.primary : COLORS.text} />
+                    <Text style={styles.toolText}>Draw</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.toolButton, currentTool === 'circle' && styles.activeToolButton]}
+                    onPress={() => handleToolSelect('circle')}
+                  >
+                    <Ionicons name="ellipse-outline" size={24} color={currentTool === 'circle' ? COLORS.primary : COLORS.text} />
+                    <Text style={styles.toolText}>Circle</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.toolButton, currentTool === 'rectangle' && styles.activeToolButton]}
+                    onPress={() => handleToolSelect('rectangle')}
+                  >
+                    <Ionicons name="square-outline" size={24} color={currentTool === 'rectangle' ? COLORS.primary : COLORS.text} />
+                    <Text style={styles.toolText}>Rectangle</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.toolButton, currentTool === 'arrow' && styles.activeToolButton]}
+                    onPress={() => handleToolSelect('arrow')}
+                  >
+                    <Ionicons name="arrow-forward" size={24} color={currentTool === 'arrow' ? COLORS.primary : COLORS.text} />
+                    <Text style={styles.toolText}>Arrow</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.toolButton, currentTool === 'text' && styles.activeToolButton]}
+                    onPress={() => handleToolSelect('text')}
+                  >
+                    <Ionicons name="text" size={24} color={currentTool === 'text' ? COLORS.primary : COLORS.text} />
+                    <Text style={styles.toolText}>Text</Text>
+                  </TouchableOpacity>
+                </View>
+                
+                {/* Line Thickness Controls */}
+                {currentTool !== 'pointer' && currentTool !== 'text' && (
+                  <View style={styles.thicknessControls}>
+                    <TouchableOpacity 
+                      style={[styles.thicknessOption, lineThickness === LINE_THICKNESS.thin && styles.activeThicknessOption]}
+                      onPress={() => handleThicknessSelect(LINE_THICKNESS.thin)}
+                    >
+                      <View style={[styles.thicknessSample, { height: LINE_THICKNESS.thin }]}>
+                        <View style={[styles.thicknessLine, { height: LINE_THICKNESS.thin }]} />
+                      </View>
+                      <Text style={styles.thicknessText}>Thin</Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      style={[styles.thicknessOption, lineThickness === LINE_THICKNESS.medium && styles.activeThicknessOption]}
+                      onPress={() => handleThicknessSelect(LINE_THICKNESS.medium)}
+                    >
+                      <View style={[styles.thicknessSample, { height: LINE_THICKNESS.medium }]}>
+                        <View style={[styles.thicknessLine, { height: LINE_THICKNESS.medium }]} />
+                      </View>
+                      <Text style={styles.thicknessText}>Medium</Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      style={[styles.thicknessOption, lineThickness === LINE_THICKNESS.thick && styles.activeThicknessOption]}
+                      onPress={() => handleThicknessSelect(LINE_THICKNESS.thick)}
+                    >
+                      <View style={[styles.thicknessSample, { height: LINE_THICKNESS.thick }]}>
+                        <View style={[styles.thicknessLine, { height: LINE_THICKNESS.thick }]} />
+                      </View>
+                      <Text style={styles.thicknessText}>Thick</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+                
                 {/* Annotation Markers */}
                 {annotationMarkers}
               </>
@@ -500,6 +769,109 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.small,
     backgroundColor: COLORS.white,
     ...SHADOWS.small,
+  },
+  toolbarContainer: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.white,
+    padding: SPACING.small,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    justifyContent: 'space-around',
+    ...SHADOWS.small,
+  },
+  toolButton: {
+    padding: SPACING.small,
+    borderRadius: BORDER_RADIUS.small,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activeToolButton: {
+    backgroundColor: COLORS.primaryLight,
+  },
+  toolText: {
+    fontSize: FONTS.tiny,
+    marginTop: 2,
+    color: COLORS.text,
+  },
+  thicknessControls: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    backgroundColor: COLORS.white,
+    padding: SPACING.small,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  thicknessOption: {
+    marginHorizontal: SPACING.small,
+    padding: SPACING.tiny,
+    borderRadius: BORDER_RADIUS.small,
+    alignItems: 'center',
+  },
+  activeThicknessOption: {
+    backgroundColor: COLORS.primaryLight,
+  },
+  thicknessSample: {
+    width: 30,
+    height: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  thicknessLine: {
+    width: '80%',
+    backgroundColor: COLORS.primary,
+  },
+  thicknessText: {
+    fontSize: FONTS.tiny,
+    marginTop: 2,
+    color: COLORS.text,
+  },
+  textAnnotation: {
+    position: 'absolute',
+    maxWidth: 150,
+    padding: SPACING.tiny,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderRadius: BORDER_RADIUS.small,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  textAnnotationContent: {
+    fontSize: FONTS.small,
+    fontWeight: 'bold',
+  },
+  textInputContainer: {
+    position: 'absolute',
+    width: 200,
+    backgroundColor: COLORS.white,
+    borderRadius: BORDER_RADIUS.small,
+    padding: SPACING.small,
+    ...SHADOWS.medium,
+    zIndex: 1000,
+  },
+  textInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.tiny,
+    padding: SPACING.small,
+    marginBottom: SPACING.small,
+  },
+  textInputButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  textInputButton: {
+    padding: SPACING.small,
+    borderRadius: BORDER_RADIUS.small,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    marginHorizontal: 2,
+  },
+  textInputSubmitButton: {
+    backgroundColor: COLORS.primary,
+  },
+  textInputButtonText: {
+    color: COLORS.text,
+    fontWeight: 'bold',
   },
   headerTitle: {
     fontSize: FONTS.large,
