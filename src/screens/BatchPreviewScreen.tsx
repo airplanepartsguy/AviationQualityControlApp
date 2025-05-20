@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -9,7 +9,13 @@ import {
   Alert,
   SafeAreaView,
   StatusBar,
-  ActivityIndicator
+  ActivityIndicator,
+  Dimensions,
+  RefreshControl,
+  Animated,
+  Platform,
+  Switch,
+  TextInput
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BatchPreviewScreenProps } from '../types/navigation';
@@ -20,12 +26,19 @@ import * as FileSystem from 'expo-file-system';
 import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService';
 import * as databaseService from '../services/databaseService';
 
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// View mode options
+type ViewMode = 'list' | 'grid';
+
+// Selection mode for multi-select operations
+type SelectionMode = 'none' | 'select';
+
 const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
   // Extract the batchId from route params
   const { batchId } = route.params;
   
-  // In a real app, we would fetch batch details from storage using the batchId
-  // For now, we'll use mock data
+  // State for batch details
   const [batchDetails, setBatchDetails] = useState<{
     photos: PhotoData[];
     orderNumber?: string;
@@ -36,74 +49,168 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
     userId: 'test-user' 
   });
   
-  // Add loading state
+  // UI state
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>('none');
+  const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchActive, setIsSearchActive] = useState(false);
+  
+  // Animation values
+  const listOpacity = useRef(new Animated.Value(1)).current;
+  const gridOpacity = useRef(new Animated.Value(0)).current;
+  
+  // FlatList reference for scrolling operations
+  const listRef = useRef<FlatList>(null);
   
   // Extract values from batch details
   const { photos: initialBatch, orderNumber, inventorySessionId, userId } = batchDetails;
   const [currentBatch, setCurrentBatch] = useState<PhotoData[]>(initialBatch);
 
-  // Fetch batch data when component mounts or batchId changes
-  useEffect(() => {
-    const fetchBatchDetails = async () => {
-      try {
-        // Set loading state to true at the start
-        setIsLoading(true);
-        console.log(`[BatchPreviewScreen] Fetching details for batch: ${batchId}`);
-        
-        // Use the database service to get the actual batch details and photos
-        const { batch, photos } = await databaseService.getBatchDetails(batchId);
-        
-        console.log(`[BatchPreviewScreen] Database returned ${photos.length} photos for batch ${batchId}`);
-        
-        if (batch) {
-          // Use the actual batch data from the database
-          const actualBatchData = {
-            photos: photos,
-            orderNumber: batch.orderNumber || route.params.identifier || `ORD-${batchId}`,
-            userId: batch.userId || 'test-user'
-          };
-          
-          setBatchDetails(actualBatchData);
-          setCurrentBatch(photos);
-          console.log('[BatchPreviewScreen] Batch loaded:', photos.length, 'photos');
-        } else {
-          console.warn(`[BatchPreviewScreen] No batch found with ID ${batchId}`);
-          
-          // If no batch was found but we have photos, still show them
-          if (photos.length > 0) {
-            const fallbackBatchData = {
-              photos: photos,
-              orderNumber: route.params.identifier || `ORD-${batchId}`,
-              userId: 'test-user'
-            };
-            
-            setBatchDetails(fallbackBatchData);
-            setCurrentBatch(photos);
-            console.log('[BatchPreviewScreen] Using photos without batch:', photos.length, 'photos');
-          } else {
-            // No batch and no photos - show empty state
-            setBatchDetails({ photos: [], userId: 'test-user' });
-            setCurrentBatch([]);
-            console.log('[BatchPreviewScreen] No photos found for batch');
+  // Toggle view mode between list and grid
+  const toggleViewMode = useCallback(() => {
+    const newMode = viewMode === 'list' ? 'grid' : 'list';
+    
+    // Animate transition between views
+    Animated.parallel([
+      Animated.timing(listOpacity, {
+        toValue: newMode === 'list' ? 1 : 0,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+      Animated.timing(gridOpacity, {
+        toValue: newMode === 'grid' ? 1 : 0,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    
+    setViewMode(newMode);
+  }, [viewMode, listOpacity, gridOpacity]);
+  
+  // Toggle selection mode for multi-select operations
+  const toggleSelectionMode = useCallback(() => {
+    if (selectionMode === 'none') {
+      setSelectionMode('select');
+    } else {
+      setSelectionMode('none');
+      setSelectedPhotos(new Set());
+    }
+  }, [selectionMode]);
+  
+  // Toggle selection of a photo
+  const togglePhotoSelection = useCallback((photoId: string) => {
+    setSelectedPhotos(prev => {
+      const newSelection = new Set(prev);
+      if (newSelection.has(photoId)) {
+        newSelection.delete(photoId);
+      } else {
+        newSelection.add(photoId);
+      }
+      return newSelection;
+    });
+  }, []);
+  
+  // Select all photos
+  const selectAllPhotos = useCallback(() => {
+    const allPhotoIds = new Set(currentBatch.map(photo => photo.id));
+    setSelectedPhotos(allPhotoIds);
+  }, [currentBatch]);
+  
+  // Deselect all photos
+  const deselectAllPhotos = useCallback(() => {
+    setSelectedPhotos(new Set());
+  }, []);
+  
+  // Handle pull-to-refresh
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchBatchDetails();
+    setRefreshing(false);
+  }, []);
+  
+  // Fetch batch details from database
+  const fetchBatchDetails = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      console.log(`[BatchPreviewScreen] Fetching details for batch: ${batchId}`);
+      
+      const { batch, photos } = await databaseService.getBatchDetails(batchId);
+      
+      console.log(`[BatchPreviewScreen] Database returned ${photos.length} photos for batch ${batchId}`);
+      
+      if (batch) {
+        setBatchDetails({
+          photos: photos,
+          orderNumber: batch.orderNumber || route.params.identifier || `ORD-${batchId}`,
+          inventorySessionId: batch.inventoryId,
+          userId: batch.userId || 'test-user'
+        });
+        setCurrentBatch(photos);
+      } else {
+        // If batch doesn't exist, show error
+        Alert.alert('Error', 'Batch not found');
+        navigation.goBack();
+      }
+    } catch (error) {
+      console.error('[BatchPreviewScreen] Error fetching batch details:', error);
+      logErrorToFile('fetchBatchDetails', error instanceof Error ? error : new Error(String(error)));
+      Alert.alert('Error', 'Failed to load batch details');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [batchId, navigation, route.params.identifier]);
+  
+  // Bulk delete selected photos
+  const handleBulkDelete = useCallback(() => {
+    if (selectedPhotos.size === 0) return;
+    
+    Alert.alert(
+      'Delete Selected Photos',
+      `Are you sure you want to delete ${selectedPhotos.size} selected photo(s)?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Create a new array without the deleted photos
+              const remainingPhotos = currentBatch.filter(
+                photo => !selectedPhotos.has(photo.id)
+              );
+              
+              // Update state
+              setCurrentBatch(remainingPhotos);
+              setBatchDetails(prev => ({ ...prev, photos: remainingPhotos }));
+              setSelectedPhotos(new Set());
+              
+              // Log analytics
+              logAnalyticsEvent('bulk_delete_photos', { 
+                count: selectedPhotos.size,
+                batchId
+              });
+              
+              // Exit selection mode if no photos left
+              if (remainingPhotos.length === 0) {
+                setSelectionMode('none');
+              }
+            } catch (error) {
+              console.error('[BatchPreviewScreen] Error deleting photos:', error);
+              Alert.alert('Error', 'Failed to delete selected photos');
+            }
           }
         }
-      } catch (error) {
-        console.error('[BatchPreviewScreen] Failed to fetch batch details:', error);
-        logErrorToFile('fetchBatchDetails', error instanceof Error ? error : new Error(String(error)));
-        Alert.alert(
-          "Error",
-          "Failed to load batch details. Please try again.",
-          [{ text: "OK", onPress: () => navigation.goBack() }]
-        );
-      } finally {
-        // Set loading state to false when done, regardless of success or failure
-        setIsLoading(false);
-      }
-    };
-    
+      ]
+    );
+  }, [selectedPhotos, currentBatch, batchId]);
+  
+  // Effect to load batch data when component mounts
+  useEffect(() => {
     fetchBatchDetails();
-  }, [batchId]);
+  }, [fetchBatchDetails]);
 
   const handleDeletePhoto = async (photoId: string) => {
     const photoToDelete = currentBatch.find(p => p.id === photoId);
@@ -187,56 +294,57 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
     // Log the analytics event
     logAnalyticsEvent('pdf_generation_started', {
       batchId: batchId,
-      orderNumber: orderNumber,
-      photoCount: currentBatch.length,
-      reportType: reportType,
-      timestamp: new Date().toISOString(),
-      userId: userId || 'test'
+      orderNumber: orderNumber
     });
     
-    // Navigate to the PDF generation screen
+    // Navigate to PDF generation screen
     navigation.navigate('PDFGeneration', {
-      batchId: batchId, // Use the same batch ID to ensure photos are found
-      reportType: reportType === 'simple' ? 'order' : 'inventory', // Convert report type to match expected values
-      orderNumber: orderNumber, // Pass the order number if available
-      inventorySessionId: inventorySessionId // Pass the inventory session ID if available
+      batchId: batchId,
+      reportType: reportType === 'simple' ? 'order' : 'inventory',
+      orderNumber: orderNumber,
+      inventorySessionId: inventorySessionId
     });
   };
 
+  // We already have handleAnnotatePhoto and handleDeletePhoto defined above
+  
   // Define renderPhotoItem inside the component
-  const renderPhotoItem = ({ item }: { item: PhotoData }) => (
-    <View style={styles.photoItemContainer}>
-      <Image source={{ uri: item.uri }} style={styles.thumbnail} />
-      <View style={styles.photoInfo}>
-        <Text style={styles.infoText}>ID: {item.id}</Text>
-        <Text style={styles.infoText}>Part: {item.partNumber}</Text>
-        {/* Add more metadata if needed, e.g., timestamp */}
-        {item.metadata.hasDefects && (
-          <View style={styles.defectIndicator}>
-            <Ionicons 
-              name="warning" 
-              size={16} 
-              color={item.metadata.defectSeverity === 'critical' ? COLORS.error : COLORS.warning} 
-            />
-            <Text style={[styles.defectText, {
-              color: item.metadata.defectSeverity === 'critical' ? COLORS.error : COLORS.warning
-            }]}>
-              {item.metadata.defectSeverity === 'critical' ? 'Critical Defect' : 'Defect'}
-            </Text>
-          </View>
-        )}
+  const renderPhotoItem = ({ item }: { item: PhotoData }) => {
+    return (
+      <View style={styles.photoItemContainer}>
+        <Image source={{ uri: item.uri }} style={styles.thumbnail} />
+        <View style={styles.photoInfo}>
+          <Text style={styles.infoText}>Part: {item.partNumber || 'No Part Number'}</Text>
+          <Text style={styles.infoText}>
+            {new Date(item.metadata.timestamp).toLocaleString()}
+          </Text>
+          {item.annotations && item.annotations.length > 0 && (
+            <View style={styles.defectIndicator}>
+              <Ionicons name="warning-outline" size={14} color={COLORS.warning} />
+              <Text style={styles.defectText}>Defect Marked</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.photoActions}>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleAnnotatePhoto(item)}
+          >
+            <Ionicons name="create-outline" size={24} color={COLORS.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleDeletePhoto(item.id)}
+          >
+            <Ionicons name="trash-outline" size={24} color={COLORS.error} />
+          </TouchableOpacity>
+        </View>
       </View>
-      <View style={styles.photoActions}>
-        <TouchableOpacity onPress={() => handleAnnotatePhoto(item)} style={styles.actionButton}>
-          <Ionicons name="create-outline" size={24} color={COLORS.primary} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleDeletePhoto(item.id)} style={styles.actionButton}>
-          <Ionicons name="trash-outline" size={24} color={COLORS.error} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+    );
+  };
 
+  // Use the currentBatch state that's already defined above
+  
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
@@ -246,7 +354,7 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
             Batch Preview ({currentBatch.length} Photos)
           </Text>
           <Text style={styles.subHeader}>
-            {orderNumber ? `Order: ${orderNumber}` : `Inventory Session: ${inventorySessionId}`}
+            {orderNumber ? `Order: ${orderNumber}` : `Inventory Session: ${inventorySessionId || 'Unknown'}`}
           </Text>
         </View>
 

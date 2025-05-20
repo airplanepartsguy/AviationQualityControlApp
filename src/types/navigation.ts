@@ -19,10 +19,11 @@ export type BottomTabParamList = {
 
 // --- Main Stack Navigator ---
 // Combining initial params and potential params after navigation
-export type RootStackParamList = {
+export interface RootStackParamList {
+  [key: string]: object | undefined; // Index signature to satisfy ParamListBase
   MainTabs: { screen: keyof BottomTabParamList }; // Entry point to tabs
   PhotoCapture: 
-    | { mode: 'Single' | 'Batch' | 'Inventory'; userId: string; orderNumber?: string; inventoryId?: string } // Starting new
+    | { mode: 'Single' | 'Batch' | 'Inventory'; userId: string; orderNumber?: string; inventoryId?: string; quickCapture?: boolean } // Starting new
     | { batchId: number }; // Resuming existing batch
   DefectHighlighting: { photo: PhotoData }; // Pass the specific photo to annotate
   Annotation: { photoId: string; photoUri: string; batchId: number; returnToBatch?: boolean }; // Add Annotation Screen
@@ -32,10 +33,11 @@ export type RootStackParamList = {
     reportType?: 'order' | 'inventory'; 
     orderNumber?: string; 
     inventorySessionId?: string; 
+    pictureType?: 'Pictures' | 'Defect Pictures';
   };
   Debug: undefined; // For DebugScreen
   // No AnalyticsScreen here, it's a Tab
-};
+}
 
 // === Screen Props ===
 

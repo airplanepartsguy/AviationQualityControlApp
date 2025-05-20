@@ -383,4 +383,88 @@ export const deleteBatch = async (batchId: number): Promise<void> => {
   // TODO: Add analytics log for batch deletion
 };
 
+// Get recent batches for a user with limit
+export const getRecentBatches = async (userId: string, limit: number = 10): Promise<any[]> => {
+  const db = await openDatabase();
+  try {
+    // Get batches with photo counts
+    const batches = await db.getAllAsync<any>(`
+      SELECT 
+        pb.id, 
+        pb.orderNumber, 
+        pb.inventoryId, 
+        pb.createdAt, 
+        pb.status as syncStatus,
+        COUNT(p.id) as photoCount
+      FROM 
+        photo_batches pb
+      LEFT JOIN 
+        photos p ON pb.id = p.batchId
+      WHERE 
+        pb.userId = ?
+      GROUP BY 
+        pb.id
+      ORDER BY 
+        pb.createdAt DESC
+      LIMIT ?
+    `, [userId, limit]);
+    
+    return batches.map(batch => ({
+      id: batch.id.toString(), // Convert to string for consistency
+      orderNumber: batch.orderNumber,
+      inventoryId: batch.inventoryId,
+      createdAt: batch.createdAt,
+      syncStatus: batch.syncStatus || 'complete',
+      photoCount: batch.photoCount || 0
+    }));
+  } catch (error) {
+    console.error('[databaseService] Error fetching recent batches:', error);
+    return [];
+  }
+};
+
+// Get daily statistics for a user
+export const getDailyStats = async (userId: string): Promise<{ photosToday: number; batchesCompleted: number; pendingSync: number }> => {
+  const db = await openDatabase();
+  try {
+    // Get today's date in YYYY-MM-DD format
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Get photos taken today
+    const photosResult = await db.getFirstAsync<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM photos p
+      JOIN photo_batches pb ON p.batchId = pb.id
+      WHERE pb.userId = ? AND date(pb.createdAt) = ?
+    `, [userId, today]);
+    
+    // Get batches completed today
+    const batchesResult = await db.getFirstAsync<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM photo_batches
+      WHERE userId = ? AND date(createdAt) = ? AND status = 'completed'
+    `, [userId, today]);
+    
+    // Get pending sync items
+    const pendingSyncResult = await db.getFirstAsync<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM photo_batches
+      WHERE userId = ? AND status = 'pending'
+    `, [userId]);
+    
+    return {
+      photosToday: photosResult?.count || 0,
+      batchesCompleted: batchesResult?.count || 0,
+      pendingSync: pendingSyncResult?.count || 0
+    };
+  } catch (error) {
+    console.error('[databaseService] Error fetching daily stats:', error);
+    return {
+      photosToday: 0,
+      batchesCompleted: 0,
+      pendingSync: 0
+    };
+  }
+};
+
 export { db }; // Export db instance if needed elsewhere, though encapsulation is preferred

@@ -1,10 +1,11 @@
 import 'react-native-gesture-handler'; // Must be at the top
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Platform, ActivityIndicator, View, StyleSheet } from 'react-native'; // Import Platform
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import Ionicons from '@expo/vector-icons/Ionicons'; // For tab icons
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 // Import Screens
 import LoginScreen from './src/screens/LoginScreen'; // Import LoginScreen
@@ -21,8 +22,15 @@ import DebugScreen from './src/screens/DebugScreen';       // Removed .tsx exten
 import { RootStackParamList, BottomTabParamList } from './src/types/navigation'; // Updated types
 import { COLORS, FONTS } from './src/styles/theme'; // Import theme
 
-// Import Auth Context
+// Import Contexts
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import { SyncProvider } from './src/contexts/SyncContext';
+
+// Import Services
+import networkService from './src/services/networkService';
+
+// Import Components
+import SyncManager from './src/components/SyncManager';
 
 // Define a separate stack for Authentication flow
 type AuthStackParamList = {
@@ -185,12 +193,27 @@ function RootNavigator() {
   );
 }
 
-// --- Main App Component (Wraps RootNavigator with AuthProvider) ---
+// --- Main App Component (Wraps RootNavigator with AuthProvider and SyncProvider) ---
 const App: React.FC = () => {
+  // Initialize network monitoring
+  useEffect(() => {
+    const unsubscribe = networkService.initNetworkMonitoring();
+    
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+  
   return (
-    <AuthProvider>
-      <RootNavigator />
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <SyncProvider>
+          <SyncManager>
+            <RootNavigator />
+          </SyncManager>
+        </SyncProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }
 

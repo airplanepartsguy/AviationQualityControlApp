@@ -17,12 +17,16 @@ import {
   Platform,
   KeyboardAvoidingView,
   ActivityIndicator,
+  PanResponder,
+  PanResponderGestureState,
 } from 'react-native';
+import Svg, { Path, Circle, Rect, Line, G, Text as SvgText } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { COLORS, SPACING, FONTS, SHADOWS, BORDER_RADIUS } from '../styles/theme';
 import CustomButton from '../components/CustomButton';
 import { PhotoData, AnnotationData } from '../types/data';
+import { DrawingPath, TextAnnotation } from '../types/drawing';
 import { logAnalyticsEvent } from '../services/analyticsService';
 import { trackPerformance, useRenderTracker, createTrackedFunction } from '../utils/performanceMonitor';
 import useImagePreloader from '../hooks/useImagePreloader';
@@ -74,17 +78,24 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
   const [defectSeverity, setDefectSeverity] = useState<'Critical' | 'Moderate' | 'Minor' | 'None'>('Moderate');
   const [defectNotes, setDefectNotes] = useState<string>('');
   
-  // Drawing tool state
+  // Drawing tool state - optimized for SVG rendering
   const [currentTool, setCurrentTool] = useState<DrawingTool>('pointer');
   const [drawingMode, setDrawingMode] = useState<DrawingMode>('draw');
   const [lineThickness, setLineThickness] = useState<number>(LINE_THICKNESS.medium);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [currentPath, setCurrentPath] = useState<string>('');
-  const [paths, setPaths] = useState<Array<{id: string, path: string, color: string, thickness: number, tool: DrawingTool}>>([]);
-  const [textAnnotations, setTextAnnotations] = useState<Array<{id: string, text: string, x: number, y: number, color: string}>>([]);
+  const [startPoint, setStartPoint] = useState<{x: number, y: number} | null>(null);
+  const [endPoint, setEndPoint] = useState<{x: number, y: number} | null>(null);
+  const [paths, setPaths] = useState<DrawingPath[]>([]);
+  const [textAnnotations, setTextAnnotations] = useState<TextAnnotation[]>([]);
   const [showTextInput, setShowTextInput] = useState<boolean>(false);
   const [textInputPosition, setTextInputPosition] = useState<{x: number, y: number}>({x: 0, y: 0});
   const [textInputValue, setTextInputValue] = useState<string>('');
+  
+  // Use refs for values that don't trigger re-renders
+  const isDrawingRef = useRef<boolean>(false);
+  const imageContainerRef = useRef<View>(null);
+  const svgRef = useRef<Svg>(null);
   
   // State for annotations
   const [annotations, setAnnotations] = useState<AnnotationData[]>([]);
@@ -126,57 +137,58 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
     }
   }, [imageError]);
 
-  // Handle start of drawing on the image
+  // Handle start of drawing on the image - optimized for SVG rendering
   const handleDrawStart = useCallback((event: GestureResponderEvent) => {
     if (!imageUri || currentTool === 'pointer') return;
     
     const { locationX, locationY } = event.nativeEvent;
     setIsDrawing(true);
+    isDrawingRef.current = true;
     
-    // Initialize path based on selected tool
-    let initialPath = '';
+    // Set start point for all drawing tools
+    setStartPoint({ x: locationX, y: locationY });
+    setEndPoint({ x: locationX, y: locationY });
     
     switch (currentTool) {
       case 'freehand':
-        initialPath = `M ${locationX} ${locationY}`;
-        break;
-      case 'circle':
-      case 'rectangle':
-      case 'arrow':
-        // Just store the starting point for shapes
-        initialPath = `${locationX},${locationY}`;
+        // For freehand, initialize the path data
+        setCurrentPath(`M ${locationX} ${locationY}`);
         break;
       case 'text':
         // For text tool, show text input at tap location
         setTextInputPosition({ x: locationX, y: locationY });
         setShowTextInput(true);
         setIsDrawing(false); // Not actually drawing for text
-        return;
+        isDrawingRef.current = false;
+        break;
+      // For shapes, we just need the start point which we've already set
     }
-    
-    setCurrentPath(initialPath);
   }, [imageUri, currentTool]);
   
-  // Handle drawing movement
+  // Handle drawing movement - optimized for SVG rendering
   const handleDrawMove = useCallback((event: GestureResponderEvent) => {
-    if (!isDrawing || !imageUri) return;
+    if (!isDrawingRef.current || !imageUri) return;
     
     const { locationX, locationY } = event.nativeEvent;
+    setEndPoint({ x: locationX, y: locationY });
     
     // Update path based on selected tool
     switch (currentTool) {
       case 'freehand':
+        // For freehand, we append to the path data
+        // Using a batch update approach for better performance
         setCurrentPath(prev => `${prev} L ${locationX} ${locationY}`);
         break;
-      // For shapes, we'll update the preview in the render function
-      // using the initial point and current point
+      // For shapes, we just update the end point which we've already set
+      // The shape preview will be rendered using the start and end points
     }
-  }, [isDrawing, imageUri, currentTool]);
+  }, [isDrawingRef, imageUri, currentTool]);
   
-  // Handle end of drawing
+  // Handle end of drawing - optimized for SVG rendering
   const handleDrawEnd = useCallback(() => {
-    if (!isDrawing || !imageUri || !currentPath) {
+    if (!isDrawingRef.current || !imageUri || (!currentPath && currentTool === 'freehand')) {
       setIsDrawing(false);
+      isDrawingRef.current = false;
       return;
     }
     
@@ -186,11 +198,36 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
     // Finalize the path based on the tool
     let finalPath = currentPath;
     
-    // For shapes, we need to construct the complete SVG path
-    if (currentTool !== 'freehand') {
-      const [startX, startY] = currentPath.split(',').map(Number);
-      const previewPath = getShapePreviewPath(startX, startY, currentTool);
-      finalPath = previewPath;
+    // For shapes, we construct the complete SVG path from start and end points
+    if (currentTool !== 'freehand' && startPoint && endPoint) {
+      switch (currentTool) {
+        case 'circle': {
+          const radius = Math.sqrt(
+            Math.pow(endPoint.x - startPoint.x, 2) + 
+            Math.pow(endPoint.y - startPoint.y, 2)
+          );
+          finalPath = `M ${startPoint.x} ${startPoint.y} m -${radius} 0 a ${radius} ${radius} 0 1 0 ${radius*2} 0 a ${radius} ${radius} 0 1 0 -${radius*2} 0`;
+          break;
+        }
+        case 'rectangle':
+          finalPath = `M ${startPoint.x} ${startPoint.y} L ${endPoint.x} ${startPoint.y} L ${endPoint.x} ${endPoint.y} L ${startPoint.x} ${endPoint.y} Z`;
+          break;
+        case 'arrow': {
+          // Simple arrow implementation
+          const arrowHeadSize = Math.min(15, Math.sqrt(
+            Math.pow(endPoint.x - startPoint.x, 2) + 
+            Math.pow(endPoint.y - startPoint.y, 2)
+          ) / 3);
+          const angle = Math.atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x);
+          const arrowPoint1X = endPoint.x - arrowHeadSize * Math.cos(angle - Math.PI/6);
+          const arrowPoint1Y = endPoint.y - arrowHeadSize * Math.sin(angle - Math.PI/6);
+          const arrowPoint2X = endPoint.x - arrowHeadSize * Math.cos(angle + Math.PI/6);
+          const arrowPoint2Y = endPoint.y - arrowHeadSize * Math.sin(angle + Math.PI/6);
+          
+          finalPath = `M ${startPoint.x} ${startPoint.y} L ${endPoint.x} ${endPoint.y} M ${endPoint.x} ${endPoint.y} L ${arrowPoint1X} ${arrowPoint1Y} M ${endPoint.x} ${endPoint.y} L ${arrowPoint2X} ${arrowPoint2Y}`;
+          break;
+        }
+      }
     }
     
     // Add the new path to paths array
@@ -207,44 +244,116 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
     
     // Reset current path and drawing state
     setCurrentPath('');
+    setStartPoint(null);
+    setEndPoint(null);
     setIsDrawing(false);
+    isDrawingRef.current = false;
     setHasDefects(true); // Mark that there are defects on the image
-  }, [isDrawing, imageUri, currentPath, currentTool, currentColor, lineThickness]);
+  }, [imageUri, currentPath, currentTool, currentColor, lineThickness, startPoint, endPoint]);
   
-  // Helper function to get preview path for shapes
-  const getShapePreviewPath = useCallback((startX: number, startY: number, tool: DrawingTool) => {
-    // This would be called during render to show shape preview
-    // or when finalizing a shape
-    if (!isDrawing || !currentPath) return '';
+  // Render SVG shape preview - optimized for performance
+  const renderShapePreview = useCallback(() => {
+    if (!startPoint || !endPoint || !isDrawingRef.current || currentTool === 'freehand' || currentTool === 'text' || currentTool === 'pointer') {
+      return null;
+    }
     
-    // For actual implementation, we'd use the current mouse/touch position
-    // Here we'll just use a placeholder end position for the example
-    const endX = startX + 100;
-    const endY = startY + 100;
+    const { x: startX, y: startY } = startPoint;
+    const { x: endX, y: endY } = endPoint;
     
-    switch (tool) {
-      case 'circle':
+    switch (currentTool) {
+      case 'circle': {
         const radius = Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2));
-        return `M ${startX} ${startY} m -${radius} 0 a ${radius} ${radius} 0 1 0 ${radius*2} 0 a ${radius} ${radius} 0 1 0 -${radius*2} 0`;
-      
+        return (
+          <Circle
+            cx={startX}
+            cy={startY}
+            r={radius}
+            stroke={currentColor}
+            strokeWidth={lineThickness}
+            fill="none"
+          />
+        );
+      }
       case 'rectangle':
-        return `M ${startX} ${startY} L ${endX} ${startY} L ${endX} ${endY} L ${startX} ${endY} Z`;
-      
-      case 'arrow':
-        // Simple arrow implementation
-        const arrowHeadSize = 10;
+        return (
+          <Rect
+            x={Math.min(startX, endX)}
+            y={Math.min(startY, endY)}
+            width={Math.abs(endX - startX)}
+            height={Math.abs(endY - startY)}
+            stroke={currentColor}
+            strokeWidth={lineThickness}
+            fill="none"
+          />
+        );
+      case 'arrow': {
+        const arrowHeadSize = Math.min(15, Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2)) / 3);
         const angle = Math.atan2(endY - startY, endX - startX);
         const arrowPoint1X = endX - arrowHeadSize * Math.cos(angle - Math.PI/6);
         const arrowPoint1Y = endY - arrowHeadSize * Math.sin(angle - Math.PI/6);
         const arrowPoint2X = endX - arrowHeadSize * Math.cos(angle + Math.PI/6);
         const arrowPoint2Y = endY - arrowHeadSize * Math.sin(angle + Math.PI/6);
         
-        return `M ${startX} ${startY} L ${endX} ${endY} M ${endX} ${endY} L ${arrowPoint1X} ${arrowPoint1Y} M ${endX} ${endY} L ${arrowPoint2X} ${arrowPoint2Y}`;
-      
+        return (
+          <G>
+            <Line
+              x1={startX}
+              y1={startY}
+              x2={endX}
+              y2={endY}
+              stroke={currentColor}
+              strokeWidth={lineThickness}
+            />
+            <Line
+              x1={endX}
+              y1={endY}
+              x2={arrowPoint1X}
+              y2={arrowPoint1Y}
+              stroke={currentColor}
+              strokeWidth={lineThickness}
+            />
+            <Line
+              x1={endX}
+              y1={endY}
+              x2={arrowPoint2X}
+              y2={arrowPoint2Y}
+              stroke={currentColor}
+              strokeWidth={lineThickness}
+            />
+          </G>
+        );
+      }
       default:
-        return '';
+        return null;
     }
-  }, [isDrawing, currentPath]);
+  }, [startPoint, endPoint, isDrawingRef, currentTool, currentColor, lineThickness]);
+  
+  // Create a pan responder for optimized drawing gesture handling
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => currentTool !== 'pointer',
+    onMoveShouldSetPanResponder: () => currentTool !== 'pointer',
+    
+    onPanResponderGrant: (event: GestureResponderEvent) => {
+      handleDrawStart(event);
+    },
+    
+    onPanResponderMove: (event: GestureResponderEvent) => {
+      handleDrawMove(event);
+    },
+    
+    onPanResponderRelease: () => {
+      handleDrawEnd();
+    },
+    
+    onPanResponderTerminate: () => {
+      // Reset drawing state
+      setCurrentPath('');
+      setStartPoint(null);
+      setEndPoint(null);
+      setIsDrawing(false);
+      isDrawingRef.current = false;
+    }
+  }), [handleDrawStart, handleDrawMove, handleDrawEnd, currentTool]);
   
   // Handle text annotation submission
   const handleTextSubmit = useCallback((text: string) => {
@@ -536,14 +645,64 @@ const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => 
               <ActivityIndicator size="large" color={COLORS.primary} style={styles.imageLoadingIndicator} />
             ) : (
               <>
-                <TouchableWithoutFeedback onPress={handleImagePress}>
-                  <Image
-                    ref={imageRef}
-                    source={{ uri: imageUri }}
-                    style={[styles.image, { aspectRatio }]}
-                    resizeMode="contain"
-                  />
-                </TouchableWithoutFeedback>
+                <View style={styles.drawingContainer} ref={imageContainerRef}>
+                  <TouchableWithoutFeedback onPress={handleImagePress}>
+                    <Image
+                      ref={imageRef}
+                      source={{ uri: imageUri }}
+                      style={[styles.image, { aspectRatio }]}
+                      resizeMode="contain"
+                    />
+                  </TouchableWithoutFeedback>
+                  
+                  {/* SVG Drawing Layer - Optimized for performance */}
+                  <View style={[styles.svgContainer, { aspectRatio }]} {...panResponder.panHandlers}>
+                    <Svg width="100%" height="100%" ref={svgRef}>
+                      {/* Render existing paths */}
+                      {paths.map(path => (
+                        <Path
+                          key={path.id}
+                          d={path.path}
+                          stroke={path.color}
+                          strokeWidth={path.thickness}
+                          fill="none"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      ))}
+                      
+                      {/* Render current path for freehand drawing */}
+                      {currentPath && currentTool === 'freehand' && (
+                        <Path
+                          d={currentPath}
+                          stroke={currentColor}
+                          strokeWidth={lineThickness}
+                          fill="none"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      )}
+                      
+                      {/* Render shape preview */}
+                      {renderShapePreview()}
+                      
+                      {/* Render text annotations */}
+                      {textAnnotations.map(annotation => (
+                        <SvgText
+                          key={annotation.id}
+                          x={annotation.x}
+                          y={annotation.y}
+                          fill={annotation.color}
+                          fontSize="16"
+                          fontWeight="bold"
+                          textAnchor="middle"
+                        >
+                          {annotation.text}
+                        </SvgText>
+                      ))}
+                    </Svg>
+                  </View>
+                </View>
                 
                 {/* Drawing Tools Toolbar */}
                 <View style={styles.toolbarContainer}>
@@ -938,6 +1097,21 @@ const styles = StyleSheet.create({
     flex: 1,
     position: 'relative',
     backgroundColor: COLORS.black,
+  },
+  drawingContainer: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  svgContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'transparent',
   },
   image: {
     width: '100%',

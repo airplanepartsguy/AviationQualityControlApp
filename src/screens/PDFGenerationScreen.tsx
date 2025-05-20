@@ -41,19 +41,6 @@ import * as databaseService from '../services/databaseService';
 
 type PDFGenerationScreenProps = StackScreenProps<RootStackParamList, 'PDFGeneration'>;
 
-// Extend the navigation params to include pictureType
-declare module '../types/navigation' {
-  // Extending existing interface, not redefining it
-  interface RootStackParamList {
-    PDFGeneration: {
-      batchId: number;
-      reportType?: 'order' | 'inventory';
-      orderNumber?: string;
-      inventorySessionId?: string;
-      pictureType?: 'Pictures' | 'Defect Pictures';
-    };
-  }
-}
 
 // Type for PDF file naming options
 type PictureType = 'Pictures' | 'Defect Pictures';

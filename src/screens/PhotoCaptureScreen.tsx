@@ -107,6 +107,11 @@ const PhotoCaptureScreen: React.FC = () => {
   
   // Handle automatic submission of scanned ID
   const handleScannedIdSubmit = async (scannedId: string) => {
+    if (!contextUserId) {
+      Alert.alert('Authentication Error', 'User ID is not available. Please log in again.');
+      logErrorToFile('User ID null in handleScannedIdSubmit', new Error('contextUserId is null'));
+      return;
+    }
     try {
       if (!scannedId.trim()) {
         Alert.alert('Invalid ID', 'Please scan a valid barcode or enter an ID manually.');
