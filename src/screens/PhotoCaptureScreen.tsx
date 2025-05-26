@@ -1,19 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Image, Alert,
-  ActivityIndicator, Platform, KeyboardAvoidingView, ScrollView, SafeAreaView, Dimensions, TextInput, Modal, Vibration
+  ActivityIndicator, Platform, SafeAreaView, Dimensions, TextInput,
+  Animated, Easing, Vibration, Linking
 } from 'react-native';
-import { CameraView, useCameraPermissions, BarcodeScanningResult, CameraCapturedPicture } from 'expo-camera';
-import { CameraType } from 'expo-camera/build/Camera.types';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { StatusBar } from 'expo-status-bar';
+import { CameraView, useCameraPermissions, CameraCapturedPicture, CameraType } from 'expo-camera';
+
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useNavigation, useRoute, useIsFocused } from '@react-navigation/native';
-import { PhotoData, PhotoMetadata, PhotoBatch, LocationData } from '../types/data';
-import CustomButton from '../components/CustomButton';
+import { PhotoData, PhotoMetadata, PhotoBatch } from '../types/data';
 import { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } from '../styles/theme';
-import CustomInput from '../components/CustomInput';
-import SafeText from '../components/SafeText';
 import { Ionicons } from '@expo/vector-icons';
 import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,1198 +23,1116 @@ import {
 } from '../services/databaseService';
 import { PhotoCaptureScreenNavigationProp, PhotoCaptureScreenRouteProp } from '../types/navigation';
 import * as MediaLibrary from 'expo-media-library';
-import performanceMonitor from '../utils/performanceMonitor';
+import * as Haptics from 'expo-haptics';
+import * as Crypto from 'expo-crypto';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Define LocationData interface for location tracking
+interface LocationData {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+  timestamp: number;
+  altitude: number;
+  altitudeAccuracy: number;
+  heading: number;
+  speed: number;
+}
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-// Reduced debounce delay to improve responsiveness while still preventing duplicate scans
 const SCAN_DEBOUNCE_DELAY = 300; // 300ms debounce for scans
+const SCAN_FRAME_SIZE = Math.min(screenWidth * 0.7, 280); // Responsive scan frame size
+const ANIMATION_DURATION = 2000; // Animation duration in ms
+const FEEDBACK_DURATION = 1500; // Feedback display duration in ms
+const HAPTIC_DURATION = 100; // Haptic feedback duration in ms
 
-const PhotoCaptureScreen: React.FC = () => {
-  const navigation = useNavigation<PhotoCaptureScreenNavigationProp>();
-  const route = useRoute<PhotoCaptureScreenRouteProp>();
-  const manualInputRef = useRef<TextInput>(null); // Ref for manual input field
-  const isFocused = useIsFocused();
-
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [mediaLibraryPermission, requestMediaLibraryPermission] = MediaLibrary.usePermissions();
-  const [locationPermission, requestLocationPermission] = Location.useForegroundPermissions();
-  const cameraRef = useRef<CameraView>(null);
-
-  const [torch, setTorch] = useState(false);
-  const [cameraType, setCameraType] = useState<CameraType>('back'); // Default to back camera
-  const [photoBatch, setPhotoBatch] = useState<PhotoData[]>([]);
-  const [isLoading, setIsLoading] = useState(false); // General loading state
-  const [isCapturing, setIsCapturing] = useState(false); // Specific state for capture process
-  const [photoDirectoryCreated, setPhotoDirectoryCreated] = useState(false); // Specific state for capture process
-  const [cameraReady, setCameraReady] = useState(false);
-
-  const [identifier, setIdentifier] = useState<string>(''); // Consolidated ID (Order or Inventory)
-  const [identifierType, setIdentifierType] = useState<'Order' | 'Inventory' | null>(null); // Type of ID
-  const [notes, setNotes] = useState<string>('');
-  const { userId: contextUserId } = useAuth(); // Renamed to avoid conflict
-
-  const [isScanningActive, setIsScanningActive] = useState(true); // Start in scanning mode
-  const [scannedData, setScannedData] = useState<string | null>(null);
-  const [scanFeedback, setScanFeedback] = useState<string>('Scan QR/Barcode or Enter ID');
-  const lastScanTime = useRef<number>(0); // For debouncing scans
-
-  const [manualIdentifier, setManualIdentifier] = useState<string>(''); // State for manual input
-
-  const [currentBatch, setCurrentBatch] = useState<PhotoBatch | null>(null); // Store the active batch details
-  const [currentMode, setCurrentMode] = useState<'Single' | 'Batch' | 'Inventory'>('Single'); // From route params or default
-
-  // --- NEW State ---
-  const [showAnnotationModal, setShowAnnotationModal] = useState(false);
-  const [lastCapturedPhoto, setLastCapturedPhoto] = useState<PhotoData | null>(null);
-
-  const [equipmentId, setEquipmentId] = useState<string>('');
-  const [componentId, setComponentId] = useState<string>('');
-  const [currentBatchId, setCurrentBatchId] = useState<number | null>(null); // Store the ID of the active batch
-
-  // Handle barcode scanning results
-  const handleBarCodeScanned = useCallback(({ type, data }: BarcodeScanningResult) => {
-    const now = Date.now();
-    // Debounce scans to prevent duplicates
-    if (now - lastScanTime.current < SCAN_DEBOUNCE_DELAY) {
-      return;
-    }
-    lastScanTime.current = now;
-    
-    // Only process if scanning is active and we don't have a current batch
-    if (!isScanningActive || currentBatch) {
-      return;
-    }
-    
-    console.log(`Barcode scanned: ${type} - ${data}`);
-    
-    // Provide haptic feedback
-    if (Platform.OS === 'ios' || Platform.OS === 'android') {
-      Vibration.vibrate(100); // Short vibration
-    }
-    
-    // Update UI with scanned data
-    setScannedData(data);
-    setScanFeedback(`Barcode detected: ${data}`);
-    
-    // Auto-use the scanned barcode as the identifier
-    setManualIdentifier(data);
-    
-    // Automatically submit the scanned barcode as the ID
-    handleScannedIdSubmit(data);
-  }, [isScanningActive, currentBatch]);
-  
-  // Handle automatic submission of scanned ID
-  const handleScannedIdSubmit = async (scannedId: string) => {
-    if (!contextUserId) {
-      Alert.alert('Authentication Error', 'User ID is not available. Please log in again.');
-      logErrorToFile('User ID null in handleScannedIdSubmit', new Error('contextUserId is null'));
-      return;
-    }
-    try {
-      if (!scannedId.trim()) {
-        Alert.alert('Invalid ID', 'Please scan a valid barcode or enter an ID manually.');
-        return;
-      }
-      
-      setIsLoading(true);
-      setScanFeedback(`Processing ID: ${scannedId}...`);
-      
-      // Determine ID type - this is a simplified example, adjust based on your ID format
-      // For example, if IDs starting with 'INV' are inventory IDs
-      const detectedType: 'Order' | 'Inventory' = 
-        scannedId.toUpperCase().startsWith('INV') ? 'Inventory' : 'Order';
-      
-      // Create a new batch with the scanned ID
-      const batchId = await createPhotoBatch(
-        contextUserId,
-        detectedType === 'Order' ? scannedId : undefined,
-        detectedType === 'Inventory' ? scannedId : undefined
-      );
-      
-      // Create a PhotoBatch object
-      const newBatch: PhotoBatch = {
-        id: batchId,
-        type: detectedType,
-        referenceId: scannedId,
-        orderNumber: detectedType === 'Order' ? scannedId : undefined,
-        inventoryId: detectedType === 'Inventory' ? scannedId : undefined,
-        userId: contextUserId,
-        createdAt: new Date().toISOString(),
-        status: 'InProgress',
-        photos: []
-      };
-      
-      // Update state with the new batch
-      setCurrentBatch(newBatch);
-      setIdentifier(scannedId);
-      setIdentifierType(detectedType);
-      setIsScanningActive(false); // Stop scanning once we have an ID
-      setScanFeedback(`Ready: ${scannedId}. Capture photos.`);
-      
-      // Log the event
-      logAnalyticsEvent('BatchCreatedFromBarcode', { 
-        batchId, 
-        identifier: scannedId, 
-        type: detectedType 
-      });
-      
-    } catch (error: any) {
-      logErrorToFile('Barcode Processing Error', error);
-      Alert.alert('Error', `Failed to process barcode: ${error.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Memoize the permissions request function to avoid recreating it on each render
-  const requestPermissions = useCallback(async () => {
-    try {
-      const camStatus = await requestCameraPermission();
-      const mediaStatus = await requestMediaLibraryPermission();
-      const locStatus = await requestLocationPermission();
-      if (!camStatus?.granted) Alert.alert('Camera permission denied', 'Camera access is required to take photos and scan barcodes.');
-      if (!mediaStatus?.granted) Alert.alert('Media Library permission denied', 'Storage access is required to save photos.');
-      // Location is optional, don't block if denied
-      if (!locStatus?.granted) console.log('Location permission denied or not requested.');
-    } catch (error) {
-      logErrorToFile('Permission Request Error', error as Error);
-      Alert.alert('Permission Error', 'Failed to request necessary permissions.');
-    }
-  }, [requestCameraPermission, requestMediaLibraryPermission, requestLocationPermission]);
-
-  useEffect(() => {
-    // Request permissions when component mounts
-    performanceMonitor.trackPerformance('requestPermissions', async () => {
-      await requestPermissions();
-    });
-  }, [requestPermissions]);
-
-  // Initialize when screen comes into focus
-  useEffect(() => {
-    const initialize = async () => {
-      setIsLoading(true);
-      setScanFeedback('Initializing...');
-      await ensureDbOpen();
-      if (!contextUserId) {
-        logErrorToFile('Initialization Error', new Error('User ID missing in context during PhotoCaptureScreen init.'));
-        Alert.alert('Authentication Error', 'User session not found. Please log in again.');
-        setIsLoading(false);
-        // Consider navigating back to login or showing a blocking error
-        // navigation.navigate('Login'); // Example if AuthStack exists
-        return;
-      }
-
-      // Type guard to check which params were passed
-      if ('mode' in route.params) {
-        // Starting a new batch
-        const { mode, orderNumber, inventoryId } = route.params;
-        const initialIdentifier = orderNumber ?? inventoryId;
-        const initialIdentifierType = orderNumber ? 'Order' : inventoryId ? 'Inventory' : null;
-
-        console.log(`[PhotoCaptureScreen] Initializing in ${mode} mode. Identifier: ${initialIdentifier || 'None'}, User: ${contextUserId}`);
-        logAnalyticsEvent('ScreenView_PhotoCapture', { mode, userId: contextUserId, identifier: initialIdentifier });
-
-        setCurrentMode(mode);
-        if (initialIdentifier && initialIdentifierType) {
-            setIdentifier(initialIdentifier);
-            setIdentifierType(initialIdentifierType);
-            setIsScanningActive(false); // ID provided, no need to scan initially
-            setScanFeedback(`Ready for ${mode}: ${initialIdentifier}. Capture photos.`);
-            // Create batch immediately if ID is provided
-            try {
-                // createPhotoBatch expects (userId, orderNumber?, inventoryId?)
-                const batchId = await createPhotoBatch(
-                    contextUserId,
-                    initialIdentifierType === 'Order' ? initialIdentifier : undefined,
-                    initialIdentifierType === 'Inventory' ? initialIdentifier : undefined
-                );
-                
-                // Create a PhotoBatch object from the returned ID
-                const newBatch: PhotoBatch = {
-                    id: batchId,
-                    type: initialIdentifierType,
-                    referenceId: initialIdentifier,
-                    orderNumber: initialIdentifierType === 'Order' ? initialIdentifier : undefined,
-                    inventoryId: initialIdentifierType === 'Inventory' ? initialIdentifier : undefined,
-                    userId: contextUserId,
-                    createdAt: new Date().toISOString(),
-                    status: 'InProgress',
-                    photos: []
-                };
-                
-                setCurrentBatch(newBatch);
-                setPhotoBatch([]); // Initialize photo array for the new batch
-                logAnalyticsEvent('BatchStartedOnNavigation', { batchId: batchId, identifier: initialIdentifier, mode });
-            } catch (error: any) {
-                logErrorToFile('Batch Creation Error on Init', error);
-                Alert.alert('Batch Creation Error', `Failed to create batch: ${error.message}. Please try again or go back.`);
-                // Handle error state, maybe disable capture button
-            }
-        } else {
-            // No initial ID provided, enable scanning/manual input
-            setIdentifier('');
-            setIdentifierType(null);
-            setCurrentBatch(null);
-            setIsScanningActive(true);
-            setScanFeedback('Scan QR/Barcode or Enter ID');
-        }
-
-      } else if ('batchId' in route.params) {
-        // Resuming an existing batch
-        const { batchId } = route.params;
-        console.log(`[PhotoCaptureScreen] Resuming batch ID: ${batchId}, User: ${contextUserId}`);
-        logAnalyticsEvent('ScreenView_PhotoCapture', { mode: 'Resume', userId: contextUserId, batchId });
-
-        try {
-            const existingBatch = await getBatchDetails(batchId);
-            if (existingBatch && existingBatch.batch) {
-                if (existingBatch.batch.userId !== contextUserId) {
-                    throw new Error('Batch belongs to a different user.');
-                }
-                // Determine mode from batch type (assuming orderNumber means 'Order', etc.)
-                const resumedIdentifier = existingBatch.batch.orderNumber ?? existingBatch.batch.inventoryId ?? 'Unknown';
-                const resumedIdentifierType = existingBatch.batch.orderNumber ? 'Order' : 'Inventory';
-
-                setCurrentMode('Batch'); // When resuming, mode is typically 'Batch'
-                setCurrentBatch(existingBatch.batch);
-                setPhotoBatch(existingBatch.photos || []);
-                setIdentifier(resumedIdentifier);
-                setIdentifierType(resumedIdentifierType);
-                setIsScanningActive(false); // Resuming, ID is known
-                setScanFeedback(`Resumed Batch ${batchId}: ${resumedIdentifier}. Capture photos.`);
-            } else {
-                throw new Error(`Batch with ID ${batchId} not found.`);
-            }
-        } catch (error: any) {
-            logErrorToFile('Batch Resume Error', error);
-            Alert.alert('Resume Error', `Failed to resume batch ${batchId}: ${error.message}. Starting fresh.`);
-            // Fallback to fresh state if resume fails
-            setCurrentMode('Batch'); // Default mode
-            setIdentifier('');
-            setIdentifierType(null);
-            setCurrentBatch(null);
-            setPhotoBatch([]);
-            setIsScanningActive(true);
-            setScanFeedback('Scan QR/Barcode or Enter ID');
-        }
-      } else {
-          // Invalid parameters
-          logErrorToFile('Initialization Error', new Error('Invalid parameters passed to PhotoCaptureScreen.'));
-          Alert.alert('Navigation Error', 'Invalid parameters received. Please go back and try again.');
-          // Set a default state or prevent interaction
-          setCurrentMode('Batch');
-          setIsScanningActive(true);
-          setScanFeedback('Error: Invalid state. Please go back.');
-      }
-
-      setIsLoading(false);
-    };
-
-    if (isFocused && contextUserId) {
-      initialize();
-    }
-
-    // Cleanup function if needed when screen loses focus
-    return () => {
-      // console.log('[PhotoCaptureScreen] Screen unfocused');
-      // Reset any temporary state if necessary
-    };
-  }, [isFocused, route.params, contextUserId]); // Depend on focus, route params, and userId
-
-  // --- Optimized Barcode Scanning ---
-  // Pre-compute regex patterns for barcode validation
-  const orderPattern = useMemo(() => /^ORD/i, []);
-  const validBarcodePattern = useMemo(() => /^[A-Z0-9-]{4,}$/i, []); // Basic validation for barcode format
-  
-  // Optimized barcode detection function with performance monitoring
-  const handleBarcodeScanned = useCallback(({ type, data }: BarcodeScanningResult) => {
-    // Skip empty data immediately
-    if (!data || !isScanningActive || identifier) return;
-    
-    // Start performance tracking
-    const startTime = performance.now();
-    
-    // Debounce: Only process scan if enough time has passed since the last one
-    const now = Date.now();
-    if (now - lastScanTime.current < SCAN_DEBOUNCE_DELAY) {
-      return;
-    }
-    
-    // Validate barcode format quickly before proceeding
-    if (!validBarcodePattern.test(data)) {
-      // Invalid format, don't process further
-      return;
-    }
-    
-    lastScanTime.current = now;
-    
-    // Process the barcode data
-    setIsScanningActive(false); // Stop scanning once a valid code is found
-    setScannedData(data);
-    setIdentifier(data); // Set the main identifier
-    
-    // Use pre-computed regex for faster type detection
-    const detectedType = orderPattern.test(data) ? 'Order' : 'Inventory';
-    setIdentifierType(detectedType);
-    
-    // Provide immediate feedback
-    setScanFeedback(`ID Detected: ${data}. Ready to capture.`);
-    Vibration.vibrate(50); // Short vibration for feedback (50ms)
-    
-    // Log analytics asynchronously to not block UI
-    setTimeout(() => {
-      logAnalyticsEvent('BarcodeScanned', { 
-        type: type.toString(), 
-        data, 
-        userId: contextUserId,
-        scanTime: performance.now() - startTime
-      });
-    }, 0);
-    
-    // If no batch exists yet, create one now that we have an identifier
-    if (!currentBatch && contextUserId) {
-      // Use the performance monitor for batch creation
-      performanceMonitor.trackPerformance('createBatchFromScan', async () => {
-        setIsLoading(true);
-        try {
-          // createPhotoBatch returns a batch ID (number), not a PhotoBatch object
-          const batchId = await createPhotoBatch(contextUserId, detectedType === 'Order' ? data : undefined, detectedType === 'Inventory' ? data : undefined);
-          
-          // Fetch the complete batch details using the ID
-          const batchDetails = await getBatchDetails(batchId);
-          if (!batchDetails.batch) {
-            throw new Error('Failed to retrieve batch after creation');
-          }
-          
-          setCurrentBatch(batchDetails.batch);
-          setPhotoBatch([]);
-          logAnalyticsEvent('BatchStartedOnScan', { 
-            batchId: batchId, 
-            identifier: data, 
-            mode: currentMode 
-          });
-        } catch (error: any) {
-          logErrorToFile('Batch Creation Error on Scan', error);
-          Alert.alert('Batch Creation Error', `Failed to create batch: ${error.message}`);
-          // Reset identifier and allow scanning again
-          setIdentifier('');
-          setIdentifierType(null);
-          setIsScanningActive(true);
-          setScanFeedback('Error creating batch. Please scan again.');
-        } finally {
-          setIsLoading(false);
-        }
-      });
-    }
-    
-    // Log performance
-    const endTime = performance.now();
-    console.log(`[PERF] Barcode scan processing: ${(endTime - startTime).toFixed(2)}ms`);
-  }, [isScanningActive, identifier, currentBatch, currentMode, contextUserId, orderPattern, validBarcodePattern]);
-
-  // --- Manual ID Input ---
-   const handleManualIdSubmit = async () => {
-        if (manualIdentifier.trim() && !identifier && contextUserId) {
-            const manualId = manualIdentifier.trim();
-            setIdentifier(manualId);
-            const detectedType = manualId.toUpperCase().startsWith('ORD') ? 'Order' : 'Inventory';
-            setIdentifierType(detectedType);
-            setIsScanningActive(true); // Automatically close the manual input by switching back to scanning mode
-            setScanFeedback(`Using Manual ID: ${manualId}. Ready to capture.`);
-            logAnalyticsEvent('ManualIdEntered', { data: manualId, userId: contextUserId });
-            setManualIdentifier(''); // Clear input field
-
-             // Create batch if none exists
-             if (!currentBatch) {
-                 setIsLoading(true);
-                 try {
-                     // createPhotoBatch returns a batch ID (number), not a PhotoBatch object
-                     const batchId = await createPhotoBatch(contextUserId, detectedType === 'Order' ? manualId : undefined, detectedType === 'Inventory' ? manualId : undefined);
-                     
-                     // Fetch the complete batch details using the ID
-                     const batchDetails = await getBatchDetails(batchId);
-                     if (!batchDetails.batch) {
-                       throw new Error('Failed to retrieve batch after creation');
-                     }
-                     
-                     setCurrentBatch(batchDetails.batch);
-                     setPhotoBatch([]);
-                     logAnalyticsEvent('BatchStartedOnManualID', { batchId: batchId, identifier: manualId, mode: currentMode });
-                 } catch (error: any) {
-                     logErrorToFile('Batch Creation Error on Manual ID', error);
-                     Alert.alert('Batch Creation Error', `Failed to create batch: ${error.message}`);
-                     setIdentifier('');
-                     setIdentifierType(null);
-                     setIsScanningActive(true);
-                     setScanFeedback('Error creating batch. Please enter ID again.');
-                 } finally {
-                     setIsLoading(false);
-                 }
-             }
-        } else if (!manualIdentifier.trim()) {
-             Alert.alert("Input Error", "Please enter a valid Order or Inventory ID.");
-        } else if (identifier) {
-             Alert.alert("Input Error", `Already using ID: ${identifier}. Cannot change mid-batch.`);
-        }
-   };
-   
-   // Function to close the manual input panel
-   const closeManualInput = () => {
-       setIsScanningActive(true);
-       setManualIdentifier(''); // Clear the input field when closing
-   };
-
-  // --- Photo Capture ---
-  const takePicture = async (isDefectPhoto: boolean = false) => {
-    if (!cameraRef.current || isCapturing || !identifier || !currentBatch || !contextUserId) {
-        if (!identifier) Alert.alert("Missing ID", "Please scan or enter an Order/Inventory ID before taking photos.");
-        if (!currentBatch) Alert.alert("Batch Error", "Cannot capture photo, batch not initialized.");
-        if (isCapturing) console.log("Capture already in progress");
-      return;
-    }
-
-    setIsCapturing(true); // Indicate capture process started
-    // Show feedback to user
-    setScanFeedback(isDefectPhoto ? 'Capturing defect photo...' : 'Capturing photo...');
-    
-    logAnalyticsEvent('PhotoCaptureStarted', { 
-      identifier, 
-      mode: currentMode, 
-      batchId: currentBatch.id, 
-      userId: contextUserId,
-      isDefectPhoto
-    });
-
-    try {
-      // Take photo with reduced quality for faster processing
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.5, // Reduced quality for faster processing
-        base64: false, // Don't need base64 if saving to file
-        skipProcessing: true, // Skip default processing
-        exif: false, // Skip EXIF data for speed
-      });
-
-      if (photo && photo.uri) {
-        // 1. Use lighter compression settings for speed
-        const compressedImage = await manipulateAsync(
-          photo.uri,
-          [{ resize: { width: 1200 } }], // Resize to reasonable dimensions
-          {
-            compress: 0.6, // More compression for faster processing
-            format: SaveFormat.JPEG, // Save as JPEG
-          }
-        );
-
-        // 2. Move to Persistent Storage (optimized)
-        const timestampForId = Date.now();
-        const photoId = `photo_${timestampForId}_${Math.random().toString(36).substring(2, 9)}`;
-        const persistentDirectory = FileSystem.documentDirectory + 'photos/';
-        
-        // Ensure directory exists (only once per session)
-        if (!photoDirectoryCreated) {
-          await FileSystem.makeDirectoryAsync(persistentDirectory, { intermediates: true });
-          setPhotoDirectoryCreated(true);
-        }
-        const persistentUri = `${persistentDirectory}${photoId}.jpg`;
-
-        await FileSystem.moveAsync({
-            from: compressedImage.uri,
-            to: persistentUri,
-        });
-        console.log(`[PhotoCaptureScreen] Compressed photo moved to: ${persistentUri}`);
-
-        // 3. Prepare Metadata (optimized - get location in background)
-        const timestampISO = new Date(timestampForId).toISOString();
-        
-        // Create metadata without waiting for location
-        const metadata: PhotoMetadata = {
-          timestamp: timestampISO,
-          userId: contextUserId,
-          hasDefects: isDefectPhoto,
-          defectNotes: notes || undefined
-        };
-        
-        // Start location fetch in background
-        if (locationPermission?.granted) {
-          // We'll update the database with location later if needed
-          Location.getCurrentPositionAsync({ 
-            accuracy: Location.Accuracy.Balanced // Use balanced accuracy for speed
-          }).then(locationResult => {
-            // This runs asynchronously and doesn't block the UI
-            if (locationResult) {
-              // Could update the photo metadata in database here if needed
-              console.log(`[PhotoCaptureScreen] Location obtained for photo ${photoId}`);
-            }
-          }).catch(locationError => {
-            console.warn("Could not get location:", locationError);
-            logErrorToFile('Location Error during photo capture', locationError);
-          });
-        }
-
-        // 4. Construct PhotoData object for saving
-        const newPhotoData: PhotoData = {
-            id: photoId,
-            batchId: currentBatch.id,
-            partNumber: identifier, // Use the main identifier as partNumber for now
-            uri: persistentUri, // Use the PERSISTENT URI
-            metadata: metadata, // Pass the metadata object directly
-            annotations: [], // Initialize with empty annotations
-            syncStatus: 'pending', // Initial sync status
-        };
-
-        // 5. Save Photo Data via Database Service
-        await savePhoto(currentBatch.id, newPhotoData);
-
-        // 6. Update State and Proceed
-        setPhotoBatch(prev => [...prev, newPhotoData]); // Add new photo data to local state
-        setLastCapturedPhoto(newPhotoData); // Store for annotation decision
-        setNotes(''); // Clear notes field after capture
-        
-        logAnalyticsEvent('PhotoCaptureSuccess', { 
-          photoId: newPhotoData.id, 
-          batchId: currentBatch.id, 
-          identifier,
-          isDefectPhoto
-        });
-        
-        // Show success feedback to user
-        setScanFeedback(isDefectPhoto ? 'Defect photo saved!' : 'Photo saved successfully!');
-        // Optional: Vibrate to provide haptic feedback on success
-        Vibration.vibrate(100);
-
-        // 7. Decide Next Step based on photo type
-        if (isDefectPhoto) {
-          // If it's a defect photo, go straight to annotation
-          // Pass the current batch context to ensure it's preserved when returning
-          navigation.navigate('Annotation', {
-            photoId: newPhotoData.id,
-            photoUri: newPhotoData.uri,
-            batchId: currentBatch.id,
-            returnToBatch: true // Flag to indicate we should preserve batch context
-          });
-        } else {
-          // For regular photos, don't show the annotation modal
-          // Just continue without interruption
-        }
-      } else {
-        throw new Error("Camera failed to capture photo (URI missing).");
-      }
-    } catch (error: any) {
-      logErrorToFile('Photo Capture/Save Error', error);
-      Alert.alert('Capture Error', `Failed to capture or save photo: ${error.message}. Please try again.`);
-    } finally {
-      setIsCapturing(false); // Indicate capture process finished
-    }
-  };
-
-  // --- Annotation Modal Logic ---
-  const handleAnnotationDecision = (annotate: boolean) => {
-    setShowAnnotationModal(false); // Hide the modal
-    if (!lastCapturedPhoto) {
-        logErrorToFile('Annotation Decision Error', new Error('lastCapturedPhoto is null when making decision.'));
-        Alert.alert('Error', 'Cannot proceed with annotation, photo data missing.');
-        return;
-    }
-
-    if (annotate) {
-        // Ensure batch context exists before navigating
-        if (!currentBatch) {
-            logErrorToFile('Annotation Navigation Error', new Error('currentBatch is null when trying to navigate to AnnotationScreen.'));
-            Alert.alert('Error', 'Cannot proceed with annotation, batch context missing.');
-            setLastCapturedPhoto(null); // Clear photo ref even on error
-            return;
-        }
-        // User wants to annotate
-        logAnalyticsEvent('AnnotationStarted', { photoId: lastCapturedPhoto.id, batchId: currentBatch.id });
-        // Navigate to AnnotationScreen, passing the photo ID and URI
-        navigation.navigate('Annotation', {
-            photoId: lastCapturedPhoto.id,
-            photoUri: lastCapturedPhoto.uri,
-            batchId: currentBatch.id, // Now guaranteed to exist
-        });
-    } else {
-        // User chose not to annotate this photo
-        logAnalyticsEvent('AnnotationSkipped', { photoId: lastCapturedPhoto.id, batchId: currentBatch?.id });
-        setScanFeedback('Photo saved. Capture next or finish.'); // Update feedback
-    }
-    // Clear the last captured photo reference after decision is made
-    setLastCapturedPhoto(null);
-  };
-
-  // --- Finishing Batch ---
-  const handleFinishBatch = () => {
-    if (!currentBatch) {
-      Alert.alert("Error", "No active batch to finish.");
-      return;
-    }
-
-    // Log the attempt only if a valid batch exists
-    logAnalyticsEvent('batch_finish_attempt', { userId: contextUserId, batchId: currentBatch.id });
-    
-    // Pass both the batch ID and identifier to ensure proper context is maintained
-    navigation.navigate('BatchPreview', { 
-      batchId: currentBatch.id,
-      identifier: identifier // Pass the identifier to maintain context
-    });
-  };
-
-  if (!cameraPermission || !mediaLibraryPermission || !locationPermission) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Requesting permissions...</Text>
-      </View>
-    );
-  }
-
-  if (!cameraPermission.granted || !mediaLibraryPermission.granted) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Ionicons name="alert-circle-outline" size={60} color={COLORS.error} />
-        <Text style={styles.loadingText}>
-          { !cameraPermission.granted && !mediaLibraryPermission.granted
-            ? 'Camera and Media Library permissions are required.'
-            : !cameraPermission.granted
-            ? 'Camera permission is required.'
-            : 'Media Library permission is required.'
-          }
-        </Text>
-        <Text style={styles.permissionText}>Please grant permissions in your device settings.</Text>
-      </View>
-    );
-  }
-
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.cameraContainer}>
-        {isFocused ? (
-          /* Camera View with Barcode Scanning */
-          <CameraView
-            ref={cameraRef}
-            style={styles.camera}
-            facing={cameraType}
-            enableTorch={torch}
-            onCameraReady={() => setCameraReady(true)}
-            barcodeScannerSettings={{
-              barcodeTypes: [
-                'aztec', 'codabar', 'code39', 'code93', 'code128', 
-                'datamatrix', 'ean13', 'ean8', 'pdf417',
-                'qr', 'upc_e', 'upc_a'
-              ],
-            }}
-            onBarcodeScanned={isScanningActive ? handleBarCodeScanned : undefined}
-          />
-        ) : (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={COLORS.secondary} />
-            <SafeText style={styles.loadingText}>Initializing Camera...</SafeText>
-          </View>
-        )}
-        {(isLoading || isCapturing) && (
-          <View style={styles.overlayContainer}>
-            <ActivityIndicator size="large" color={COLORS.white} />
-            <SafeText style={styles.overlayText}>{isCapturing ? 'Processing...' : 'Loading...'}</SafeText>
-          </View>
-        )}
-        {currentBatch && (
-          <View style={styles.batchInfoContainer}>
-            <SafeText style={styles.batchInfoText}>
-              Batch: {currentBatch.id} | ID: {identifier || 'N/A'} | Photos: {photoBatch.length}
-            </SafeText>
-          </View>
-        )}
-        {isScanningActive ? (
-          /* --- Scanning Active UI --- */
-          <View style={styles.scanFeedbackContainer}>
-            <SafeText style={styles.scanFeedbackText}>{scanFeedback}</SafeText>
-            {scannedData && (
-              <SafeText style={styles.scannedDataText}>
-                {scannedData.length > 20 ? `${scannedData.substring(0, 20)}...` : scannedData}
-              </SafeText>
-            )}
-          </View>
-        ) : (
-          /* --- Manual Input Active UI --- */
-          <View style={styles.manualInputContainer}>
-            {/* Close button in top-right corner */}
-            <TouchableOpacity 
-              style={styles.closeButton} 
-              onPress={closeManualInput}
-            >
-              <Ionicons name="close-circle" size={28} color={COLORS.grey600} />
-            </TouchableOpacity>
-            
-            <CustomInput
-              ref={manualInputRef} // Assign ref
-              placeholder="Enter Identifier Manually"
-              value={manualIdentifier}
-              onChangeText={setManualIdentifier}
-              style={styles.manualInputField} // Use specific style
-              keyboardType="default"
-              returnKeyType="done"
-              onSubmitEditing={handleManualIdSubmit} // Allow submit via keyboard
-            />
-            <CustomButton
-              title="Submit ID"
-              onPress={handleManualIdSubmit}
-              variant="primary"
-              style={styles.manualSubmitButton} // Use specific style
-              disabled={!manualIdentifier.trim()} // Disable if input is empty
-            />
-            {/* Notes Input (Only show when manual ID is active) */}
-            <TextInput
-              style={[styles.metadataInput, styles.notesInput]} // Reuse existing styles
-              placeholder="Notes (Optional)"
-              placeholderTextColor={COLORS.grey400}
-              value={notes}
-              onChangeText={setNotes}
-              multiline
-              blurOnSubmit={true} // Dismiss keyboard on submit/blur
-            />
-          </View>
-        )}
-      </View>
-      {/* Finish Button - Positioned prominently at the top right */}
-      <TouchableOpacity 
-        onPress={handleFinishBatch} 
-        style={[styles.finishButton, { opacity: photoBatch.length > 0 ? 1 : 0.5 }]}
-        disabled={photoBatch.length === 0}
-      >
-        <Ionicons 
-          name="checkmark-done-circle" 
-          size={30} 
-          color={COLORS.white} 
-        />
-        <SafeText style={styles.finishButtonText}>
-          Finish ({photoBatch.length})
-        </SafeText>
-      </TouchableOpacity>
-
-      {/* --- Controls Container (Positioned Absolutely at Bottom) --- */}
-      <View style={styles.controlsContainer}>
-        {/* --- Left Side Controls --- */}
-        <View style={styles.sideControls}>
-          {/* Thumbnail/Gallery Button */}
-          <TouchableOpacity style={styles.controlButton} onPress={() => {/* TODO: Gallery */}}>
-            <Ionicons name="images" size={28} color={COLORS.white} />
-            {photoBatch.length > 0 && (
-              <Image
-                source={{ uri: photoBatch[photoBatch.length - 1].uri }} // Use 'uri' directly
-                style={styles.thumbnailPreview}
-              />
-            )}
-          </TouchableOpacity>
-
-          {/* Scan / Manual Toggle Button */}
-          <TouchableOpacity
-            style={[styles.controlButton, !isScanningActive && styles.manualActiveButton]} // Highlight when manual is active
-            onPress={() => {
-              const goingToManual = isScanningActive; // Current state is scanning, will switch to manual
-              setIsScanningActive(!isScanningActive); 
-              if (goingToManual) {
-                // Use timeout to ensure input is rendered before focusing
-                setTimeout(() => manualInputRef.current?.focus(), 50);
-              }
-            }}
-          >
-            <Ionicons 
-              name={isScanningActive ? "keypad-outline" : "barcode-outline"} // Show keypad icon when scanning, barcode when manual
-              size={28} 
-              color={isScanningActive ? COLORS.white : COLORS.primaryLight} // Highlight color when manual
-            />
-            <SafeText style={[styles.controlText, { color: isScanningActive ? COLORS.white : COLORS.primaryLight }]}>
-              {isScanningActive ? 'Enter ID' : 'Use Scan'}
-            </SafeText>
-          </TouchableOpacity>
-        </View>
-        
-        {/* Center Controls */}
-        <View style={styles.centerControls}>
-          {/* Regular Photo Button */}
-          <TouchableOpacity
-            disabled={!cameraReady || !currentBatch || isCapturing || isLoading} // Disable conditions
-            style={[
-              styles.captureButton,
-              (!cameraReady || !currentBatch || isCapturing || isLoading) && styles.captureButtonDisabled // Apply disabled style
-            ]}
-            onPress={() => takePicture(false)} // Call with false for regular photo
-          >
-            {isCapturing ? (
-              <ActivityIndicator size="small" color={COLORS.white} />
-            ) : (
-              <Ionicons name="camera" size={40} color={COLORS.white} />
-            )}
-          </TouchableOpacity>
-
-          {/* Defect Photo Button */}
-          <TouchableOpacity
-            disabled={!cameraReady || !currentBatch || isCapturing || isLoading}
-            style={[
-              styles.defectButton,
-              (!cameraReady || !currentBatch || isCapturing || isLoading) && styles.captureButtonDisabled
-            ]}
-            onPress={() => takePicture(true)} // Call with true for defect photo
-          >
-            <Ionicons name="warning" size={24} color={COLORS.white} />
-            <SafeText style={styles.defectButtonText}>Defect</SafeText>
-          </TouchableOpacity>
-        </View>
-        
-        {/* Right Side Controls */}
-        <View style={styles.sideControls}>
-          <View style={styles.cameraControlButtons}>
-            <TouchableOpacity
-              onPress={() => {
-                console.log("Flash button pressed. Current torch state:", torch, "New state:", !torch);
-                setTorch(!torch);
-              }}
-              style={styles.controlButton}
-            >
-              <Ionicons
-                name={torch ? "flash" : "flash-off"}
-                size={28}
-                color={torch ? "#FFCC00" : COLORS.white}
-              />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => {
-                console.log("Camera flip button pressed");
-                setCameraType(prev => prev === 'back' ? 'front' : 'back');
-              }}
-              style={styles.controlButton}
-            >
-              <Ionicons name="camera-reverse-outline" size={28} color={COLORS.white} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-
-      {/* ----- Annotation Decision Modal ----- */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={showAnnotationModal}
-        onRequestClose={() => handleAnnotationDecision(false)} // Treat closing as 'No Annotation'
-      >
-        <View style={styles.modalCenteredView}>
-          <View style={styles.modalView}>
-            <SafeText style={styles.modalText}>Defect Found?</SafeText>
-            <SafeText style={styles.modalSubText}>Do you need to annotate a defect on the photo you just took?</SafeText>
-            <View style={styles.modalButtonContainer}>
-              <CustomButton
-                title="Yes, Annotate Defect"
-                onPress={() => handleAnnotationDecision(true)}
-                variant="primary"
-                style={styles.modalButton}
-              />
-              <CustomButton
-                title="No Defect / Continue"
-                onPress={() => handleAnnotationDecision(false)}
-                variant="secondary"
-                style={styles.modalButton}
-              />
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-    </SafeAreaView>
-  );
-};
-
-// Define styles
+// Styles - Optimized and organized by component area for aviation quality control
 const styles = StyleSheet.create({
-  safeArea: {
+  container: {
     flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  cameraContainer: {
-    flex: 1, // Takes up available space above controls
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.black, // Camera background
+    backgroundColor: COLORS.black,
   },
   camera: {
-    // Make camera view fill the container
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
   },
-  loadingContainer: {
+  // Aviation-specific styles for part identification
+  partGuidanceText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.white,
+    marginBottom: SPACING.medium,
+    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: SPACING.medium,
+    paddingVertical: SPACING.small,
+    borderRadius: BORDER_RADIUS.small,
+  },
+  formatExamplesContainer: {
+    marginTop: SPACING.medium,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: SPACING.medium,
+    paddingVertical: SPACING.small,
+    borderRadius: BORDER_RADIUS.small,
+  },
+  formatExampleText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+    textAlign: 'center',
+  },
+  successDetailText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+    textAlign: 'center',
+    marginTop: SPACING.tiny,
+  },
+  permissionContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
     padding: SPACING.large,
   },
-  loadingText: {
-    marginTop: SPACING.medium,
-    fontSize: FONTS.large,
+  permissionText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.normal,
     color: COLORS.text,
     textAlign: 'center',
-    paddingHorizontal: SPACING.large,
+    marginVertical: SPACING.medium,
   },
-  permissionText: {
-    marginTop: SPACING.small,
-    fontSize: FONTS.medium,
-    color: COLORS.grey600,
-    textAlign: 'center',
-    paddingHorizontal: SPACING.large,
+  permissionButton: {
+    backgroundColor: COLORS.primary,
+    paddingVertical: SPACING.small,
+    paddingHorizontal: SPACING.medium,
+    borderRadius: BORDER_RADIUS.small,
+    marginTop: SPACING.medium,
   },
-  overlayContainer: {
-    ...StyleSheet.absoluteFillObject, // Make overlay cover the parent
-    zIndex: 1, // Ensure overlays are on top of camera but below controls
+  permissionButtonText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.white,
   },
-  processingOverlay: { // Renamed from generic 'overlay' for clarity
+  loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  loadingText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+    marginTop: SPACING.small,
+  },
+  scanOverlay: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  overlayText: {
-    color: COLORS.white,
-    marginTop: SPACING.small,
-    fontSize: FONTS.medium,
-    fontWeight: 'bold',
-  },
-  batchInfoContainer: {
-    position: 'absolute',
-    top: SPACING.large + (Platform.OS === 'ios' ? 40 : 10), // Position below status bar
-    left: SPACING.medium,
-    right: SPACING.medium,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingVertical: SPACING.tiny + 2,
-    paddingHorizontal: SPACING.medium,
-    borderRadius: BORDER_RADIUS.small,
+  scanFrameContainer: {
     alignItems: 'center',
   },
-  batchInfoText: {
-    color: COLORS.white,
-    fontSize: FONTS.small,
-    fontWeight: 'bold',
+  scanFrame: {
+    width: SCAN_FRAME_SIZE,
+    height: SCAN_FRAME_SIZE,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+    borderRadius: BORDER_RADIUS.small,
+    overflow: 'hidden',
   },
-  scanFeedbackContainer: {
+  scanLine: {
+    height: 2,
+    width: '100%',
+    backgroundColor: COLORS.primary,
+  },
+  // Styles for Scan Frame Corners
+  cornerBase: {
     position: 'absolute',
-    bottom: 80, // Move up slightly to avoid overlap with main controls
-    left: SPACING.medium,
-    right: SPACING.medium,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)', // Slightly darker background
-    paddingVertical: SPACING.small + 2, // Increase vertical padding
-    paddingHorizontal: SPACING.medium,
-    borderRadius: BORDER_RADIUS.medium, // Slightly larger radius
-    alignItems: 'center', // Center text horizontally
+    width: 30, // Size of the corner leg
+    height: 30, // Size of the corner leg
+    borderColor: COLORS.primary,
+    borderWidth: 4, // Thickness of the corner
   },
-  scanFeedbackText: {
+  topLeftCorner: {
+    top: -2, // Offset by half of borderWidth to align with outer edge of scanFrame border
+    left: -2,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: BORDER_RADIUS.small, // Match scanFrame's radius
+  },
+  topRightCorner: {
+    top: -2,
+    right: -2,
+    borderLeftWidth: 0,
+    borderBottomWidth: 0,
+    borderTopRightRadius: BORDER_RADIUS.small,
+  },
+  bottomLeftCorner: {
+    bottom: -2,
+    left: -2,
+    borderRightWidth: 0,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: BORDER_RADIUS.small,
+  },
+  bottomRightCorner: {
+    bottom: -2,
+    right: -2,
+    borderLeftWidth: 0,
+    borderTopWidth: 0,
+    borderBottomRightRadius: BORDER_RADIUS.small,
+  },
+  scanText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.normal,
     color: COLORS.white,
+    marginTop: SPACING.medium,
     textAlign: 'center',
-    fontSize: FONTS.medium, // Increase font size
-    fontWeight: '500',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: SPACING.medium,
+    paddingVertical: SPACING.small,
+    borderRadius: BORDER_RADIUS.small,
   },
-  scannedDataText: {
-    color: COLORS.accent,
-    textAlign: 'center',
-    fontSize: FONTS.medium,
-    fontWeight: 'bold',
-    marginTop: SPACING.tiny,
-  },
-  controlsContainer: {
-    position: 'absolute', // Keep controls absolutely positioned
-    bottom: 0,
+  topControls: {
+    position: 'absolute',
+    top: 0,
     left: 0,
     right: 0,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    padding: SPACING.medium,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: SPACING.medium,
-    paddingBottom: Platform.OS === 'ios' ? SPACING.large : SPACING.medium, // Adjust padding for notch/home bar
-    paddingTop: SPACING.small,
-    backgroundColor: COLORS.black,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.grey800,
-    width: '100%',
-    zIndex: 2, // Ensure controls are above overlays
+  },
+  topRightControls: {
+    flexDirection: 'row',
+  },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: SPACING.small,
+  },
+  bottomControls: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: SPACING.medium,
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  controlButton: {
+    width: 80,
+    height: 80,
+    borderRadius: BORDER_RADIUS.medium,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  controlButtonText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+    marginTop: SPACING.tiny,
   },
   captureButton: {
     width: 70,
     height: 70,
     borderRadius: 35,
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.white,
     justifyContent: 'center',
     alignItems: 'center',
     ...SHADOWS.medium,
     borderWidth: 3,
-    borderColor: COLORS.white,
+    borderColor: COLORS.primary,
+  },
+  captureButtonInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: COLORS.white,
   },
   captureButtonDisabled: {
-    opacity: 0.5, // Visual indicator that the button is disabled
+    opacity: 0.5,
+    backgroundColor: COLORS.grey600,
+  },
+  disabledText: {
+    color: COLORS.grey400,
+  },
+  galleryButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: COLORS.secondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...SHADOWS.small,
+  },
+  captureButtonInnerDisabled: {
+    opacity: 0.5,
+  },
+  disabledButton: {
+    opacity: 0.5,
+    backgroundColor: COLORS.grey600,
+  },
+  captureButtonsContainer: {
+    alignItems: 'center',
   },
   defectButton: {
     backgroundColor: COLORS.error,
-    borderRadius: 30,
-    padding: 10,
-    marginHorizontal: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: SPACING.small,
+    paddingHorizontal: SPACING.medium,
+    borderRadius: BORDER_RADIUS.small,
+    marginTop: SPACING.small,
     flexDirection: 'row',
-    height: 50,
-  },
-  finishButtonText: {
-    color: COLORS.white,
-    marginLeft: 5,
-    fontWeight: 'bold',
+    alignItems: 'center',
   },
   defectButtonText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.semiBold,
     color: COLORS.white,
     marginLeft: 5,
-    fontWeight: 'bold',
   },
-  sideControls: {
-    // Use flex to push side controls away from center capture button
-    flex: 1,
-    flexDirection: 'row', // Arrange side-by-side for left group
-    justifyContent: 'center', // Center items horizontally
-    alignItems: 'center',
-  },
-  centerControls: {
-    flexDirection: 'row',
+  scanningIndicator: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginHorizontal: SPACING.medium,
   },
-  controlButton: {
-    paddingHorizontal: SPACING.medium, // Add horizontal padding for touch area
-    paddingVertical: SPACING.small,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  controlText: {
+  scanningText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.normal,
     color: COLORS.white,
-    fontSize: FONTS.small,
-    marginTop: 4,
   },
-  manualActiveButton: {
-    // Optional: Add distinct style when manual mode button is active (e.g., background)
-    // backgroundColor: COLORS.secondary, 
-    // borderRadius: BORDER_RADIUS.medium, 
-  },
-  scanActiveButton: {
-    backgroundColor: COLORS.primaryLight,
-    borderRadius: BORDER_RADIUS.medium,
-    padding: SPACING.small,
-  },
-  manualInputContainer: {
-    position: 'absolute',
-    top: '25%', // Position it somewhere prominent, adjust as needed
-    left: SPACING.large,
-    right: SPACING.large,
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.9)', // Semi-transparent white background
-    padding: SPACING.medium,
-    borderRadius: BORDER_RADIUS.medium,
-    ...SHADOWS.medium,
-  },
-  closeButton: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    zIndex: 10,
-  },
-  manualInputField: {
-    width: '100%', 
-    marginBottom: SPACING.medium,
-    backgroundColor: COLORS.white, // Ensure solid background for input
-  },
-  manualSubmitButton: {
-    width: '100%',
-    marginTop: SPACING.small, // Add space above notes
-  },
-  metadataInput: {
-    backgroundColor: COLORS.white,
-    borderColor: COLORS.grey400,
-    borderWidth: 1,
-    borderRadius: BORDER_RADIUS.small,
-    paddingHorizontal: SPACING.medium,
-    paddingVertical: SPACING.small,
-    fontSize: FONTS.regular,
-    color: COLORS.grey800,
-    marginBottom: SPACING.small,
-    width: '100%', // Ensure it takes container width
-  },
-  notesInput: {
-    minHeight: 60,
-    textAlignVertical: 'top',
-  },
-  modalCenteredView: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 22,
-  },
-  modalView: {
-    margin: 20,
-    backgroundColor: 'white',
-    borderRadius: 20,
-    padding: 35,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  modalText: {
-    marginBottom: 15,
-    textAlign: 'center',
-    fontSize: FONTS.large, // Make modal text slightly larger
-    fontWeight: '600',
-  },
-  modalSubText: {
-    marginBottom: 15,
-    textAlign: 'center',
-    fontSize: FONTS.small,
-  },
-  modalButtonContainer: {
+  manualInputHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    width: '100%', // Ensure buttons take full width
+    width: '100%',
+    marginBottom: SPACING.medium,
   },
-  modalButton: {
-    flex: 1, // Make buttons share space
-    marginHorizontal: SPACING.small,
+  manualInputTitle: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.white,
   },
-  thumbnailPreview: {
-    width: 35,
-    height: 35,
-    borderRadius: BORDER_RADIUS.tiny,
-    position: 'absolute', // Overlay on the gallery icon
-    bottom: 5,
-    right: 5,
-    borderWidth: 1,
-    borderColor: COLORS.white,
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  manualInputContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: BORDER_RADIUS.small,
+    marginBottom: SPACING.medium,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  manualInput: {
+    flex: 1,
+    height: 50,
+    color: COLORS.white,
+    paddingHorizontal: SPACING.medium,
+    fontSize: FONTS.regular,
+  },
+  manualInputButton: {
+    width: 50,
+    height: 50,
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  manualInputHint: {
+    fontSize: FONTS.small,
+    color: 'rgba(255,255,255,0.7)',
+    textAlign: 'center',
+  },
+  batchInfoContainer: {
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: BORDER_RADIUS.small,
+    padding: SPACING.medium,
+    marginBottom: SPACING.medium,
+  },
+  batchInfoText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+  },
+  photoCountText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+    marginTop: SPACING.tiny,
   },
   finishButton: {
-    position: 'absolute',
-    top: 50,
-    right: 20,
-    backgroundColor: COLORS.accent,
-    borderRadius: 30,
-    padding: 10,
+    flexDirection: 'row',
+    backgroundColor: COLORS.success,
+    borderRadius: BORDER_RADIUS.small,
+    padding: SPACING.medium,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: SPACING.medium,
+    ...SHADOWS.small,
+  },
+  finishButtonDisabled: {
+    opacity: 0.5,
+  },
+  finishButtonText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.white,
+    marginRight: SPACING.small,
+  },
+  finishButtonContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    zIndex: 100,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
   },
-  cameraControlButtons: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
+  photoCountBadge: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
+  successFeedback: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    width: 200,
+    marginLeft: -100,
+    marginTop: -50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  successFeedbackInner: {
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    padding: SPACING.large,
+    borderRadius: BORDER_RADIUS.medium,
+    alignItems: 'center',
+  },
+  successText: {
+    color: COLORS.white,
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    marginTop: SPACING.small,
+    textAlign: 'center',
+  },
+  // Removed duplicated successFeedbackInner styles that were here
+
+  successFeedbackText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.normal,
+    color: COLORS.white,
+    textAlign: 'center',
+    marginTop: SPACING.small,
+  },
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.black,
+  },
+  cameraContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.black,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.black,
+    padding: SPACING.large,
+  },
+  overlayContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
+  overlayText: {
+    color: COLORS.white,
+    fontSize: FONTS.regular,
+    fontWeight: 'bold',
+  },
+  controlsContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: SPACING.medium,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.medium,
+    paddingBottom: Platform.OS === 'ios' ? SPACING.large : SPACING.medium,
+    paddingTop: SPACING.small,
+    backgroundColor: COLORS.black,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    width: '100%',
+    zIndex: 2,
+  }
 });
 
+/**
+ * PhotoCaptureScreen Component
+ * 
+ * A streamlined camera interface for industrial quality control photography
+ * Optimized for high-volume workflows in shipping & receiving environments
+ */
+const PhotoCaptureScreen: React.FC = () => {
+  // TODO: Verify PhotoCaptureScreenRouteProp in navigation types for route.params.batchId and route.params.identifier
+  const navigation = useNavigation<PhotoCaptureScreenNavigationProp>();
+  const route = useRoute<PhotoCaptureScreenRouteProp>();
+  const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
+  const auth = useAuth();
+  const { userId } = auth;
+  
+  const cameraRef = useRef<CameraView>(null);
+  const manualInputRef = useRef<TextInput>(null);
+  const lastScanTime = useRef<number>(0);
+  const lastScannedRef = useRef<string | null>(null);
+  const mountedRef = useRef<boolean>(false);
+  
+  const scanLineAnimation = useRef(new Animated.Value(0)).current;
+  const feedbackOpacity = useRef(new Animated.Value(0)).current; // For the new feedback system
+
+  const [cameraPermissionInfo, requestCameraPermission] = useCameraPermissions();
+  const [mediaLibraryPermissionInfo, requestMediaLibraryPermission] = MediaLibrary.usePermissions();
+  const [locationPermissionInfo, requestLocationPermission] = Location.useForegroundPermissions();
+  
+  const [torch, setTorch] = useState(false);
+  const [cameraMode, setCameraMode] = useState<CameraType>('back');
+  const [cameraReady, setCameraReady] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); // For general loading states
+
+  const [photoBatch, setPhotoBatch] = useState<PhotoData[]>([]);
+  const [currentBatch, setCurrentBatch] = useState<PhotoBatch | null>(null);
+  const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
+  const [identifier, setIdentifier] = useState<string | undefined>(undefined);
+  const [identifierType, setIdentifierType] = useState<'Order' | 'Inventory' | 'Single' | 'Batch'>('Single');
+  const [scanFeedback, setScanFeedback] = useState<string>('Scan barcode or QR code');
+  const [isScanningActive, setIsScanningActive] = useState<boolean>(true);
+  const [manualIdInput, setManualIdInput] = useState<string>('');
+  const [lastCapturedPhoto, setLastCapturedPhoto] = useState<PhotoData | null>(null);
+  const [showManualInput, setShowManualInput] = useState(false);
+
+  const [feedback, setFeedback] = useState<{visible: boolean, message: string, type: 'success' | 'error'}>({visible: false, message: '', type: 'success'});
+
+  // Component Mount/Unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Feedback Animations
+  const showFeedbackAnimation = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+    if (!mountedRef.current) return;
+    setFeedback({ visible: true, message, type });
+    Animated.timing(feedbackOpacity, {
+      toValue: 1,
+      duration: 300,
+      easing: Easing.out(Easing.ease),
+      useNativeDriver: true,
+    }).start(() => {
+      if (!mountedRef.current) return;
+      setTimeout(() => {
+        if (mountedRef.current) hideFeedbackAnimation();
+      }, FEEDBACK_DURATION);
+    });
+  }, [feedbackOpacity]);
+
+  const hideFeedbackAnimation = useCallback(() => {
+    if (!mountedRef.current) return;
+    Animated.timing(feedbackOpacity, {
+      toValue: 0,
+      duration: 300,
+      easing: Easing.in(Easing.ease),
+      useNativeDriver: true,
+    }).start(() => {
+      if (mountedRef.current) setFeedback({ visible: false, message: '', type: 'success' });
+    });
+  }, [feedbackOpacity]);
+
+  // Haptic Feedback Utility
+  const triggerHapticFeedback = useCallback((type: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Medium) => {
+    Haptics.impactAsync(type);
+  }, []);
+
+  const resetBatch = useCallback((showAnim: boolean = true) => {
+    if (!mountedRef.current) return;
+    setCurrentBatch(null);
+    setPhotoBatch([]);
+    setIdentifier('');
+    setIdentifierType('Inventory'); // Or 'Single' as a more generic default after reset
+    setIsScanningActive(true);
+    setShowManualInput(false);
+    setScanFeedback('Scan barcode or QR code');
+    setLastCapturedPhoto(null);
+    lastScannedRef.current = null; // Reset last scanned ref
+    if(showAnim) showFeedbackAnimation('Session Reset', 'success');
+    triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Light);
+    logAnalyticsEvent('batch_reset');
+  }, [showFeedbackAnimation, triggerHapticFeedback, logAnalyticsEvent]); // Added logAnalyticsEvent to dependencies
+
+  // Permissions Request Logic
+  useEffect(() => {
+    const requestAllPermissions = async () => {
+      if (!mountedRef.current) return;
+      setIsLoading(true);
+      setScanFeedback('Requesting permissions...');
+      try {
+        const [camPerm, mediaPerm, locPerm] = await Promise.all([
+          requestCameraPermission(),
+          requestMediaLibraryPermission(),
+          requestLocationPermission(),
+        ]);
+        if (!mountedRef.current) return;
+
+        if (!camPerm?.granted) {
+          setScanFeedback('Camera permission is required.');
+          Alert.alert('Permission Denied', 'Camera permission is required to use the app.');
+          setIsLoading(false);
+          return;
+        }
+        if (!mediaPerm?.granted) {
+          Alert.alert('Optional Permission', 'Media Library access allows saving photos to your gallery. You can grant this later in settings.');
+        }
+        logAnalyticsEvent('permissions_checked', { cam: camPerm?.granted, media: mediaPerm?.granted, loc: locPerm?.granted });
+        setScanFeedback('Ready to scan');
+      } catch (error) {
+        if (!mountedRef.current) return;
+        console.error('Error requesting permissions:', error);
+        const err = error instanceof Error ? error : new Error(String(error));
+        showFeedbackAnimation('Permission Error', 'error');
+        logErrorToFile('permission_request_error', err);
+        setScanFeedback('Permission error.');
+      }
+      if (mountedRef.current) setIsLoading(false);
+    };
+    requestAllPermissions();
+  }, []);
+
+  // Scan Line Animation
+  useEffect(() => {
+    const animateScanLine = () => {
+      scanLineAnimation.setValue(0);
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanLineAnimation, {
+            toValue: SCAN_FRAME_SIZE - 2, 
+            duration: ANIMATION_DURATION / 2,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+          Animated.timing(scanLineAnimation, {
+            toValue: 0,
+            duration: ANIMATION_DURATION / 2,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    };
+    if (isScanningActive && cameraReady) {
+      animateScanLine();
+    } else {
+      scanLineAnimation.stopAnimation();
+    }
+    return () => scanLineAnimation.stopAnimation();
+  }, [isScanningActive, cameraReady, scanLineAnimation]);
+
+  // Screen Focus/Blur Logic
+  useEffect(() => {
+    if (isFocused && route.params) {
+      if ('batchId' in route.params && typeof route.params.batchId === 'number') {
+        // Resuming existing batch
+        const batchIdToFetch = route.params.batchId;
+        setIsScanningActive(false);
+        setScanFeedback(`Loading batch ${batchIdToFetch}...`);
+
+        // Assuming getBatchDetails expects a number and returns { batch: PhotoBatch | null, photos: PhotoData[] | null }
+        getBatchDetails(batchIdToFetch).then(result => {
+          if (result && result.batch && mountedRef.current) {
+            setCurrentBatch({
+              id: result.batch.id,
+              type: result.batch.type, // Should be 'Order' | 'Inventory' | 'Single'
+              referenceId: result.batch.referenceId, // This should be the main identifier
+              userId: result.batch.userId,
+              createdAt: result.batch.createdAt,
+              status: result.batch.status,
+              photos: result.photos || []
+            });
+            setPhotoBatch(result.photos || []);
+
+            const fetchedIdentifier = result.batch.referenceId || 
+                                    (result.batch.orderNumber ? `ORD-${result.batch.orderNumber}` : 
+                                    (result.batch.inventoryId ? `INV-${result.batch.inventoryId}` : `Batch ${result.batch.id}`));
+            setIdentifier(fetchedIdentifier);
+            // Ensure result.batch.type is one of 'Order', 'Inventory', or 'Single'
+            const batchType = result.batch.type === 'Order' || result.batch.type === 'Inventory' || result.batch.type === 'Single' ? result.batch.type : 'Single';
+            setIdentifierType(batchType);
+            setScanFeedback(`Continuing: ${fetchedIdentifier}`);
+          } else if (mountedRef.current) {
+            showFeedbackAnimation('Batch details not found. Starting new session.', 'error');
+            resetBatch(false);
+          }
+        }).catch(err => {
+          if (!mountedRef.current) return;
+          console.error('Error fetching batch details:', err);
+          showFeedbackAnimation('Error loading batch. Starting new session.', 'error');
+          resetBatch(false);
+        });
+      } else if ('mode' in route.params) {
+        // Starting a new session based on mode, orderNumber, inventoryId
+        const { mode, orderNumber, inventoryId } = route.params as { mode: 'Single' | 'Batch' | 'Inventory', orderNumber?: string, inventoryId?: string }; // Type assertion
+        const id = orderNumber || inventoryId;
+        if (id) {
+          setIdentifier(id);
+          setIdentifierType(orderNumber ? 'Order' : 'Inventory');
+          setScanFeedback(`New session for: ${id}`);
+        } else {
+          setIdentifier(mode === 'Single' ? 'Single Photo' : 'New Session');
+          setIdentifierType(mode === 'Inventory' ? 'Inventory' : (mode === 'Batch' ? 'Batch' : 'Single'));
+          setScanFeedback(mode === 'Single' ? 'Ready for single capture' : 'Ready to scan or capture.');
+        }
+        setIsScanningActive(true);
+        resetBatch(true); 
+      } else {
+        // Fallback: route.params exists but doesn't match known shapes
+        // Or if route.params was initially undefined and isFocused became true
+        setIdentifier('New Session');
+        setIdentifierType('Single');
+        setScanFeedback('Ready to scan or capture.');
+        setIsScanningActive(true);
+        resetBatch(true);
+      }
+    } else if (isFocused) {
+      // route.params is undefined, treat as a fresh start
+      setIdentifier('New Session');
+      setIdentifierType('Single');
+      setScanFeedback('Ready to scan or capture.');
+      setIsScanningActive(true);
+      resetBatch(true);
+    }
+  }, [isFocused, route.params, getBatchDetails, showFeedbackAnimation, resetBatch]);
+
+  const handleScannedIdSubmit = useCallback(async (scannedId: string) => {
+    if (isLoading || !mountedRef.current) return;
+    setIsLoading(true);
+    const cleanId = scannedId.trim().toUpperCase();
+
+    if (!/^[A-Z0-9-]{4,}$/i.test(cleanId)) {
+      showFeedbackAnimation('Invalid ID Format (min 4 chars)', 'error');
+      triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Heavy);
+      if (mountedRef.current) setIsLoading(false);
+      return;
+    }
+
+    try {
+      await ensureDbOpen();
+      const newIdType = cleanId.startsWith('ORD-') ? 'Order' : 'Inventory';
+      // TODO: Verify return type of createPhotoBatch (e.g., string or number for batchId)
+      const batchId = await createPhotoBatch(
+        userId || 'unknown_user',
+        newIdType === 'Order' ? cleanId : undefined,
+        newIdType === 'Inventory' ? cleanId : undefined
+      );
+      if (!mountedRef.current) return;
+
+      const newBatchData: PhotoBatch = {
+        id: batchId, // batchId is a number, PhotoBatch.id is a number
+        type: newIdType,
+        referenceId: cleanId,
+        userId: userId || 'unknown_user',
+        createdAt: new Date().toISOString(),
+        status: 'InProgress',
+        photos: [],
+      };
+      setCurrentBatch(newBatchData);
+      setPhotoBatch([]);
+      setIdentifier(cleanId);
+      setIdentifierType(newIdType);
+      setIsScanningActive(false);
+      setShowManualInput(false);
+      setScanFeedback(`${newIdType}: ${cleanId}`);
+      showFeedbackAnimation(`Batch Started: ${cleanId}`, 'success');
+      triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Heavy);
+      logAnalyticsEvent('batch_created', { identifier: cleanId, type: newIdType });
+    } catch (error) {
+      if (!mountedRef.current) return;
+      console.error('Error creating batch:', error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      showFeedbackAnimation('Error Starting Batch', 'error');
+      logErrorToFile('batch_creation_error', err); // TODO: Revisit logging context if needed
+    }
+    if (mountedRef.current) setIsLoading(false);
+  }, [isLoading, userId, showFeedbackAnimation, triggerHapticFeedback]);
+
+  const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
+    if (!isScanningActive || isLoading || !mountedRef.current) return;
+    const now = Date.now();
+    if (now - lastScanTime.current < SCAN_DEBOUNCE_DELAY) return;
+    lastScanTime.current = now;
+    if (data === lastScannedRef.current && !__DEV__) return; // Allow re-scan in DEV
+    lastScannedRef.current = data;
+
+    console.log('Barcode scanned:', data);
+    triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Medium);
+    setScanFeedback(`Processing: ${data.trim()}`);
+    handleScannedIdSubmit(data.trim());
+  }, [isScanningActive, isLoading, handleScannedIdSubmit, triggerHapticFeedback]);
+
+  const handleManualIdSubmit = useCallback(() => {
+    if (!manualIdInput.trim() || !mountedRef.current) return;
+    triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Light);
+    handleScannedIdSubmit(manualIdInput.trim());
+  }, [manualIdInput, handleScannedIdSubmit, triggerHapticFeedback]);
+
+  const toggleManualInput = useCallback(() => {
+    if (!mountedRef.current) return;
+    setShowManualInput(prev => {
+      const newShowManualInput = !prev;
+      if (newShowManualInput) {
+        setIsScanningActive(false);
+        setTimeout(() => manualInputRef.current?.focus(), 100);
+      } else {
+        if (!currentBatch) setIsScanningActive(true);
+      }
+      return newShowManualInput;
+    });
+  }, [currentBatch]);
+
+  const processAndSavePhoto = useCallback(async (photo: CameraCapturedPicture, isDefect: boolean) => {
+    if (!currentBatch || !mountedRef.current) {
+      throw new Error('No active batch to save photo to.');
+    }
+    setIsLoading(true);
+    setScanFeedback('Processing photo...');
+    try {
+      const manipResultUri: string = photo.uri; // Using original URI as manipulation is removed
+
+      // Location fetching removed as per user request
+      const metadata: PhotoMetadata = {
+        timestamp: new Date().toISOString(),
+        userId: userId || 'unknown-user', // Use destructured userId
+        // latitude: undefined, // Location data removed
+        // longitude: undefined, // Location data removed
+        deviceModel: `${Platform.OS} ${Platform.Version}`, // Added deviceModel
+        hasDefects: isDefect,
+        // defectSeverity: undefined, // TODO: Populate if/when severity is captured at photo time
+        // defectNotes: undefined,    // TODO: Populate if/when notes are captured at photo time
+      };
+      const newPhotoId = Crypto.randomUUID();
+      const photoDataToSave: PhotoData = {
+        id: newPhotoId,
+        batchId: currentBatch.id,
+        uri: photo.uri, // Original URI from camera
+        orderNumber: currentBatch.orderNumber || (currentBatch.type === 'Order' ? currentBatch.referenceId : undefined),
+        inventoryId: currentBatch.inventoryId || (currentBatch.type === 'Inventory' ? currentBatch.referenceId : undefined),
+        // partNumber: undefined, // Explicitly undefined or sourced if available
+        metadata,
+        syncStatus: 'pending',
+        // Ensure other fields like annotations, annotationSavedUri are handled if/when implemented
+      };
+
+      console.time('DatabaseSavePhoto');
+      const savedPhotoId = await savePhoto(currentBatch.id, photoDataToSave);
+      console.timeEnd('DatabaseSavePhoto');
+      if (!mountedRef.current) return;
+
+      // It's good practice to use the ID confirmed by the database, which savePhoto now returns.
+      const finalPhotoData: PhotoData = { ...photoDataToSave, id: savedPhotoId };
+
+      setPhotoBatch(prev => [...prev, finalPhotoData]);
+      setLastCapturedPhoto(finalPhotoData);
+
+      if (!mountedRef.current) return;
+      showFeedbackAnimation(`${isDefect ? 'Defect' : 'Photo'} Saved`, 'success');
+      logAnalyticsEvent('photo_saved_db', { batchId: currentBatch.id, photoId: savedPhotoId, isDefect });
+    } catch (error) {
+      if (!mountedRef.current) return; // Early exit if component unmounted
+      console.error('Error processing/saving photo:', error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      logErrorToFile('Error in PhotoCaptureScreen.processAndSavePhoto', err);
+      Alert.alert('Save Failed', 'Could not save photo. Please try again. Check logs for details.');
+    } finally {
+      if (mountedRef.current) { // Check mountedRef again before setting state
+        setIsLoading(false);
+        setScanFeedback('');
+      }
+    }
+  }, [currentBatch, userId, locationPermissionInfo?.granted, showFeedbackAnimation]);
+
+  const takePicture = useCallback(async (isDefect: boolean = false) => {
+    if (isCapturing || !cameraReady || !mountedRef.current) return;
+    if (!currentBatch) {
+      showFeedbackAnimation('Start a Batch First!', 'error');
+      triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Heavy);
+      if (!showManualInput) toggleManualInput(); 
+      return;
+    }
+    setIsCapturing(true);
+    setScanFeedback('Capturing...');
+    triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const photo = await cameraRef.current?.takePictureAsync({
+        quality: 1.0, // Maximize JPEG quality
+        skipProcessing: true, 
+        exif: true,
+      });
+      if (!photo || !mountedRef.current) throw new Error('Photo capture failed or component unmounted.');
+      
+      await processAndSavePhoto(photo, isDefect);
+      logAnalyticsEvent('photo_captured_raw', { batchId: currentBatch.id, isDefect });
+    } catch (error) {
+      if (!mountedRef.current) return;
+      console.error('Error in takePicture:', error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      if (!err.message.includes('Error Saving Photo')) {
+         showFeedbackAnimation('Capture Error', 'error');
+      }
+      logErrorToFile('takePicture_error', err); // TODO: Revisit logging context if needed
+    } finally {
+      if (mountedRef.current) setIsCapturing(false);
+      logAnalyticsEvent('photo_capture_attempt_completed', { context: 'takePicture_finally' }); // Changed event and payload
+    }
+  }, [isCapturing, cameraReady, currentBatch, processAndSavePhoto, showFeedbackAnimation, triggerHapticFeedback, toggleManualInput, showManualInput]);
+
+  if (isLoading && !cameraReady && !cameraPermissionInfo?.granted) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>{scanFeedback}</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!cameraPermissionInfo?.granted) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.permissionContainer}>
+          <Ionicons name="camera-outline" size={60} color={COLORS.warning} />
+          <Text style={styles.permissionText}>Camera permission is essential to use this app.</Text>
+          <TouchableOpacity style={styles.permissionButton} onPress={requestCameraPermission}>
+            <Text style={styles.permissionButtonText}>Grant Camera Permission</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.permissionButton} onPress={() => Linking.openSettings()}>
+            <Text style={styles.permissionButtonText}>Open Settings</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+  
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar style="light" backgroundColor={COLORS.black} />
+
+      {feedback.visible && (
+        <Animated.View style={[styles.successFeedback, { opacity: feedbackOpacity, zIndex: 20 }]}>
+          <View style={styles.successFeedbackInner}>
+            <Ionicons 
+              name={feedback.type === 'success' ? "checkmark-circle" : "alert-circle"} 
+              size={48} 
+              color={feedback.type === 'success' ? COLORS.success : COLORS.error} 
+            />
+            <Text style={styles.successText}>{feedback.message}</Text>
+          </View>
+        </Animated.View>
+      )}
+
+      {isLoading && cameraReady && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>{scanFeedback || 'Processing...'}</Text>
+        </View>
+      )}
+
+      <CameraView
+        ref={cameraRef}
+        style={styles.camera}
+        facing={cameraMode}
+        onCameraReady={() => { if (mountedRef.current) setCameraReady(true); }}
+        ratio="4:3" // Set aspect ratio to 4:3 for potentially higher resolution
+        barcodeScannerSettings={{
+          barcodeTypes: ['qr', 'datamatrix', 'code128', 'code39', 'ean13', 'upc_a', 'pdf417', 'aztec'],
+        }}
+        onBarcodeScanned={isScanningActive && cameraReady && !isLoading ? handleBarCodeScanned : undefined}
+        enableTorch={torch}
+        onMountError={(error) => {
+          if (!mountedRef.current) return;
+          console.error('Camera mount error:', error);
+          const err = error instanceof Error ? error : new Error(String(error));
+          showFeedbackAnimation('Camera Mount Error', 'error');
+          logErrorToFile('camera_mount_error', err);
+        }}
+      >
+        {isScanningActive && cameraReady && (
+          <View style={styles.scanOverlay}>
+            <View style={styles.scanFrameContainer}>
+              <View style={styles.scanFrame}>
+                <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineAnimation }] }]} />
+                <View style={[styles.cornerBase, styles.topLeftCorner]} />
+                <View style={[styles.cornerBase, styles.topRightCorner]} />
+                <View style={[styles.cornerBase, styles.bottomLeftCorner]} />
+                <View style={[styles.cornerBase, styles.bottomRightCorner]} />
+              </View>
+              <Text style={styles.scanText}>{scanFeedback}</Text>
+            </View>
+          </View>
+        )}
+
+        {!isScanningActive && currentBatch && !showManualInput && (
+          <View style={[styles.overlayContainer, { top: insets.top + SPACING.medium, alignItems: 'center'}]}>
+            <View style={styles.batchInfoContainer}>
+              <Text style={styles.batchInfoText}>{currentBatch.type}: {identifier}</Text>
+              <Text style={styles.photoCountText}>Photos: {photoBatch.length}</Text>
+            </View>
+          </View>
+        )}
+
+        {showManualInput && (
+          <View style={[styles.overlayContainer, { top: insets.top + SPACING.medium, paddingHorizontal: SPACING.large, justifyContent: 'flex-start'}]}>
+            <View style={styles.manualInputHeader}>
+                <Text style={styles.manualInputTitle}>Enter ID Manually</Text>
+                <TouchableOpacity onPress={toggleManualInput} style={styles.closeButton}>
+                    <Ionicons name="close" size={24} color={COLORS.white} />
+                </TouchableOpacity>
+            </View>
+            <View style={styles.manualInputContainer}>
+              <TextInput
+                ref={manualInputRef}
+                style={styles.manualInput}
+                placeholder="Enter Part/Order ID"
+                placeholderTextColor={COLORS.grey400}
+                value={manualIdInput}
+                onChangeText={setManualIdInput}
+                onSubmitEditing={handleManualIdSubmit}
+                autoCapitalize="characters"
+                returnKeyType="done"
+                editable={!isLoading}
+              />
+              <TouchableOpacity style={styles.manualInputButton} onPress={handleManualIdSubmit} disabled={isLoading || !manualIdInput.trim()}>
+                <Ionicons name="checkmark" size={28} color={COLORS.white} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.manualInputHint}>Min 4 chars. Examples: RLS-123, INV-A456</Text>
+          </View>
+        )}
+      </CameraView>
+
+      <View style={[styles.topControls, { top: insets.top }]}>
+        <TouchableOpacity style={styles.iconButton} onPress={() => resetBatch()} disabled={isLoading}>
+          <Ionicons name="refresh" size={24} color={COLORS.white} />
+        </TouchableOpacity>
+        <View style={styles.topRightControls}>
+          <TouchableOpacity style={styles.iconButton} onPress={() => setTorch(t => !t)} disabled={isLoading || !cameraReady}>
+            <Ionicons name={torch ? "flash" : "flash-off"} size={24} color={COLORS.white} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconButton} onPress={() => setCameraMode(ct => ct === 'back' ? 'front' : 'back')} disabled={isLoading || !cameraReady}>
+            <Ionicons name="camera-reverse" size={24} color={COLORS.white} />
+          </TouchableOpacity>
+          {(isScanningActive || !currentBatch) && !showManualInput && (
+             <TouchableOpacity style={styles.iconButton} onPress={toggleManualInput} disabled={isLoading}>
+                <Ionicons name="keypad-outline" size={24} color={COLORS.white} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      <View style={[styles.bottomControls, { paddingBottom: insets.bottom || SPACING.medium }]}>
+        <View style={styles.controlsRow}>
+          <TouchableOpacity 
+            style={styles.galleryButton} 
+            onPress={() => { if (currentBatch) { navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier: currentBatch.referenceId }); } }} 
+            disabled={isLoading}
+          >
+            {lastCapturedPhoto ? (
+              <Image source={{ uri: lastCapturedPhoto.uri }} style={{width: '100%', height: '100%', borderRadius: 25}} />
+            ) : (
+              <Ionicons name="images" size={28} color={COLORS.white} />
+            )}
+          </TouchableOpacity>
+          
+          <View style={styles.captureButtonsContainer}>
+            <TouchableOpacity 
+              style={[styles.captureButton, (isCapturing || !cameraReady || !currentBatch) && styles.captureButtonDisabled]}
+              onPress={() => takePicture(false)}
+              disabled={isCapturing || !cameraReady || !currentBatch || isLoading}
+            >
+              <View style={styles.captureButtonInner} />
+            </TouchableOpacity>
+            {currentBatch && (
+                <TouchableOpacity 
+                    style={[styles.defectButton, (isCapturing || !cameraReady) && styles.disabledButton]}
+                    onPress={() => takePicture(true)}
+                    disabled={isCapturing || !cameraReady || isLoading}
+                >
+                    <Ionicons name="alert-circle-outline" size={20} color={COLORS.white} />
+                    <Text style={styles.defectButtonText}>Mark Defect</Text>
+                </TouchableOpacity>
+            )}
+          </View>
+
+          <TouchableOpacity 
+            style={[styles.controlButton, {width: 50, height: 50, borderRadius: 25, backgroundColor: COLORS.secondary}, (!currentBatch || photoBatch.length === 0) && styles.disabledButton]}
+            disabled={!currentBatch || photoBatch.length === 0 || isLoading}
+            onPress={() => {
+              if (currentBatch) {
+                navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier });
+              }
+            }}
+          >
+            <Ionicons name="checkmark-done" size={28} color={COLORS.white} />
+            {photoBatch.length > 0 && (
+                <View style={styles.photoCountBadge}><Text style={{color: COLORS.black, fontSize: 10, fontWeight: 'bold'}}>{photoBatch.length}</Text></View>
+            )}
+          </TouchableOpacity>
+        </View>
+        {currentBatch && photoBatch.length > 0 && (
+            <TouchableOpacity
+                style={[styles.finishButton, {marginTop: SPACING.medium}] }
+                onPress={() => {
+                    if (currentBatch) {
+                        navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier });
+                    }
+                }}
+                disabled={isLoading}
+            >
+                <Text style={styles.finishButtonText}>Review & Complete ({photoBatch.length})</Text>
+                <Ionicons name="arrow-forward" size={20} color={COLORS.white} />
+            </TouchableOpacity>
+        )}
+      </View>
+    </SafeAreaView>
+  );
+};
+
+
 export default PhotoCaptureScreen;
+

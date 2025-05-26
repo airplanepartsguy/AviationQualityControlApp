@@ -99,15 +99,8 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
         throw new Error(`Source image file not found: ${photo.uri}`);
       }
       
-      // Compress and resize the image to make it more manageable
-      const compressedImage = await ImageManipulator.manipulateAsync(
-        photo.uri,
-        [{ resize: { width: 1000 } }], // Smaller size for better performance
-        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
-      );
-      
-      // Convert the image to base64
-      const base64 = await FileSystem.readAsStringAsync(compressedImage.uri, {
+      // Convert the image to base64 using the original URI
+      const base64 = await FileSystem.readAsStringAsync(photo.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
       
@@ -173,31 +166,25 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
               page-break-after: always;
               page-break-inside: avoid;
               width: 100%;
-              height: 100vh;
-              display: flex;
-              flex-direction: column;
-              position: relative;
-            }
-            .header {
-              width: 100%;
-              background-color: #f0f0f0;
-              padding: 15px;
-              text-align: center;
-              border-bottom: 1px solid #ccc;
-              font-family: Arial, sans-serif;
-              font-size: 16px;
-              font-weight: bold;
-              color: #333;
+              height: 100%; /* Use percentage height to fit PDF page */
+              margin: 0;
+              padding: 0;
+              display: flex; /* Use flex to center image */
+              justify-content: center;
+              align-items: center;
+              overflow: hidden; /* Hide any overflow if image is larger than page */
             }
             .image-container {
-              flex: 1;
+              width: 100%;
+              height: 100%;
               display: flex;
               justify-content: center;
               align-items: center;
             }
             .image {
-              max-width: 100%;
-              max-height: 100%;
+              width: 100%;
+              height: 100%;
+              object-fit: cover; /* Ensures image covers the page, cropping if necessary */
               display: block;
             }
             /* Last page should not have a page break after it */
@@ -209,7 +196,6 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
         <body>
           ${dataUrls.map((dataUrl, index) => `
             <div class="page">
-              <div class="header">${fileName}</div>
               <div class="image-container">
                 <img class="image" src="${dataUrl}" alt="Image ${index+1}" />
               </div>
@@ -249,18 +235,24 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
       
       if (Platform.OS === 'ios') {
         // On iOS, we need a special approach to ensure the filename is preserved
-        // First, copy the file to the documents directory with our desired name
-        const documentsDir = FileSystem.documentDirectory;
-        const targetPath = `${documentsDir}${displayName}`;
+        // Create a temporary directory for our PDFs if it doesn't exist
+        const pdfTempDir = `${FileSystem.cacheDirectory}pdf-temp/`;
+        const dirInfo = await FileSystem.getInfoAsync(pdfTempDir);
+        
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(pdfTempDir, { intermediates: true });
+        }
+        
+        // Use a unique identifier for this specific PDF to avoid duplicates
+        // But store it in a way that doesn't affect the visible filename
+        const uniqueId = Date.now().toString();
+        // Store the unique ID in the directory path instead of the filename
+        const uniqueDir = `${pdfTempDir}${uniqueId}/`;
+        await FileSystem.makeDirectoryAsync(uniqueDir, { intermediates: true });
+        const targetPath = `${uniqueDir}${displayName}`;
         
         try {
-          // Check if the file already exists and remove it if it does
-          const fileInfo = await FileSystem.getInfoAsync(targetPath);
-          if (fileInfo.exists) {
-            await FileSystem.deleteAsync(targetPath, { idempotent: true });
-          }
-          
-          // Copy the file to the documents directory with our custom name
+          // Copy the file to our temp directory with the unique name
           await FileSystem.copyAsync({
             from: pdfUri,
             to: targetPath
@@ -268,7 +260,7 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
           
           console.log(`File copied to: ${targetPath}`);
           
-          // Now share the file with the custom name
+          // Share the file with the custom name
           const result = await Sharing.shareAsync(targetPath, {
             UTI: 'com.adobe.pdf',
             mimeType: 'application/pdf',
@@ -276,6 +268,31 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
           });
           
           console.log(`PDF shared with result:`, result);
+          
+          // Schedule cleanup of the temp file after sharing is complete
+          // This prevents accumulation of temporary files in the cache directory
+          setTimeout(async () => {
+            try {
+              // Clean up the entire unique directory instead of just the file
+              await FileSystem.deleteAsync(uniqueDir, { idempotent: true });
+              console.log(`Temporary directory cleaned up: ${uniqueDir}`);
+              
+              // Check if the parent temp directory is empty and clean it up if it is
+              try {
+                const tempDirContents = await FileSystem.readDirectoryAsync(pdfTempDir);
+                if (tempDirContents.length === 0) {
+                  await FileSystem.deleteAsync(pdfTempDir, { idempotent: true });
+                  console.log('Empty parent temp directory cleaned up');
+                }
+              } catch (parentDirError) {
+                // Non-critical error, just log it
+                console.warn('Error checking parent directory:', parentDirError);
+              }
+            } catch (cleanupError) {
+              console.warn('Error cleaning up temp files:', cleanupError);
+              // Non-critical error, don't alert the user
+            }
+          }, 10000); // Wait 10 seconds after sharing to clean up
         } catch (copyError) {
           console.error('Error copying file:', copyError);
           // Fall back to sharing the original file

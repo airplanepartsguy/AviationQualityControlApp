@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Aviation Quality Control App is a React Native application designed for aircraft maintenance personnel to document and report quality control inspections. The app allows users to capture photos, annotate defects, generate PDF reports, and share them with relevant stakeholders.
+The Aviation Quality Control App is a React Native application designed for aircraft maintenance personnel to document and report quality control inspections in shipping & receiving environments. The app allows users to capture photos, scan barcodes for parts identification, annotate defects, generate PDF reports, and share them with relevant stakeholders. It has been optimized for high-volume photography workflows in industrial settings.
 
 ## Key Features Implemented
 
@@ -170,46 +170,44 @@ const handleDrawStart = useCallback((event: GestureResponderEvent) => {
 
 ### 3. Barcode Scanning for ID Recognition
 
-We implemented automatic barcode scanning in the PhotoCaptureScreen:
+We implemented automatic barcode scanning in the PhotoCaptureScreen with recent significant improvements:
 
 - **Auto-Recognition**: Camera automatically recognizes barcodes and uses them as IDs
-- **ID Type Detection**: Automatically determines if the scanned code is an inventory ID or order number
+- **More Permissive ID Format**: Accepts any alphanumeric string with at least 4 characters
 - **Haptic Feedback**: Provides vibration feedback when a barcode is detected
 - **Fallback to Manual Entry**: Users can still manually enter IDs if needed
+- **Improved UI Feedback**: Clear visual feedback during scanning process
 
 **Key Code Snippet (Barcode Scanning):**
 ```typescript
-// Handle barcode scanning results
-const handleBarCodeScanned = useCallback(({ type, data }: BarcodeScanningResult) => {
+// Handle barcode scanning with debouncing to prevent duplicates
+const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
+  // Skip if scanning is inactive or if we're already loading
+  if (!isScanningActive || isLoading) return;
+  
+  // Debounce scans to prevent duplicate processing
   const now = Date.now();
-  // Debounce scans to prevent duplicates
-  if (now - lastScanTime.current < SCAN_DEBOUNCE_DELAY) {
-    return;
-  }
+  if (now - lastScanTime.current < SCAN_DEBOUNCE_DELAY) return;
   lastScanTime.current = now;
   
-  // Only process if scanning is active and we don't have a current batch
-  if (!isScanningActive || currentBatch) {
-    return;
-  }
+  // Prevent processing the same code multiple times in succession
+  if (data === lastScannedRef.current) return;
+  lastScannedRef.current = data;
   
-  console.log(`Barcode scanned: ${type} - ${data}`);
+  console.log('Barcode scanned:', data);
   
-  // Provide haptic feedback
-  if (Platform.OS === 'ios' || Platform.OS === 'android') {
-    Vibration.vibrate(100); // Short vibration
-  }
+  // Provide haptic feedback to indicate successful scan
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   
-  // Update UI with scanned data
-  setScannedData(data);
-  setScanFeedback(`Barcode detected: ${data}`);
+  // Clean the scanned data
+  const cleanData = data.trim();
   
-  // Auto-use the scanned barcode as the identifier
-  setManualIdentifier(data);
+  // Update UI to show we're processing the scan
+  setScanFeedback(`Processing: ${cleanData}`);
   
-  // Automatically submit the scanned barcode as the ID
-  handleScannedIdSubmit(data);
-}, [isScanningActive, currentBatch]);
+  // Process the scanned ID
+  handleScannedIdSubmit(cleanData);
+}, [isScanningActive, isLoading, handleScannedIdSubmit]);
 ```
 
 ## Design Decisions
@@ -231,6 +229,28 @@ const handleBarCodeScanned = useCallback(({ type, data }: BarcodeScanningResult)
    - Implemented automatic ID type detection based on prefix conventions
    - Provided fallback to manual entry for cases where scanning fails
 
+## Recent Improvements
+
+### 1. Camera Functionality Enhancements
+
+- **Fixed Camera View**: Resolved issues with the camera not being visible in the PhotoCaptureScreen
+- **Updated Camera API**: Implemented the latest Expo Camera API with proper barcode scanning settings
+- **Improved Photo Capture**: Added a small delay before taking a picture to ensure camera readiness
+- **Enhanced Error Handling**: Better error messages and recovery mechanisms for camera issues
+
+### 2. UI/UX Improvements
+
+- **Streamlined Interface**: Removed redundant back button for cleaner UI
+- **Enhanced Button Styling**: Improved visual feedback for capture and defect buttons
+- **Better Disabled States**: Clear visual indication when buttons are inactive
+- **More Responsive Controls**: Improved touch responsiveness and haptic feedback
+
+### 3. ID Format Recognition
+
+- **More Permissive Validation**: Accepts various ID formats common in aviation environments
+- **Simplified Manual Input**: Clearer error messages with examples of valid formats
+- **Focus Management**: Automatic focus on input fields for better user experience
+
 ## Known Issues and Limitations
 
 1. **iOS Filename Limitations**:
@@ -242,43 +262,47 @@ const handleBarCodeScanned = useCallback(({ type, data }: BarcodeScanningResult)
    - Complex drawings with many paths may cause performance issues on older devices
    - Text annotations have limited styling options currently
 
-3. **Barcode Scanning**:
-   - Some barcode formats may not be recognized reliably
-   - Low-light conditions can affect scanning accuracy
+3. **Barcode Scanning in Low Light**:
+   - Low-light conditions can still affect scanning accuracy
+   - Some reflective surfaces may cause scanning issues
 
 ## Next Steps
 
-1. **Optimize Drawing Performance**:
-   - Implement a more efficient rendering system for complex drawings
-   - Add the ability to select and modify existing drawings
+1. **Further Camera Optimizations**:
+   - Optimize camera settings for better performance in various lighting conditions
+   - Implement a flash control button for low-light environments
+   - Add a zoom capability for scanning small barcodes
 
-2. **Enhance PDF Generation**:
-   - Add options for PDF templates with company branding
-   - Implement PDF compression for faster sharing
-   - Add support for including metadata like inspection date, inspector name, etc.
+2. **Enhance Batch Management**:
+   - Implement batch merging for combining related records
+   - Add batch tagging for better organization
+   - Improve the batch preview interface
 
-3. **Improve Barcode Scanning**:
-   - Add support for more barcode formats
-   - Implement a guided scanning interface with visual feedback
-   - Add the ability to scan multiple barcodes in sequence
+3. **Sync Status UI Integration**:
+   - Move the sync status panel from a floating overlay to an integrated component in the Dashboard
+   - Add visual indicators for sync progress and status
+   - Implement retry mechanisms for failed syncs
 
-4. **Data Synchronization**:
-   - Implement offline-first data storage with background sync
-   - Add conflict resolution for cases where the same record is modified on multiple devices
+4. **ERP Integration**:
+   - Prepare for future Salesforce integration using n8n
+   - Implement user-friendly batch renaming with confirmation dialogs
+   - Add data validation to ensure compatibility with ERP systems
 
-5. **User Experience Improvements**:
-   - Add onboarding tutorials for new users
-   - Implement user preferences for default settings
-   - Add accessibility features for users with disabilities
+5. **Performance Optimizations**:
+   - Reduce app loading times and camera initialization delays
+   - Optimize memory usage for handling large batches of photos
+   - Implement better caching strategies for frequently accessed data
 
 ## Dependencies and APIs
 
+- **Expo Camera**: Used for photo capture and barcode scanning with the latest API implementation
+- **Expo Haptics**: Used for providing tactile feedback to users during scanning and photo capture
+- **Expo Image Manipulator**: Used for image processing and optimization
+- **Expo FileSystem**: Used for file operations like copying and deleting
 - **Expo Print**: Used for generating PDFs from HTML content
 - **Expo Sharing**: Used for sharing generated PDFs
-- **Expo FileSystem**: Used for file operations like copying and deleting
-- **Expo Camera**: Used for photo capture and barcode scanning
 - **React Navigation**: Used for screen navigation
-- **Expo Image Manipulator**: Used for image processing before PDF generation
+- **React Native Safe Area Context**: Used for handling safe areas on different devices
 
 ## Testing Recommendations
 
@@ -290,4 +314,6 @@ const handleBarCodeScanned = useCallback(({ type, data }: BarcodeScanningResult)
 
 ## Conclusion
 
-The Aviation Quality Control App has been significantly enhanced with advanced defect markup tools, improved PDF generation and naming, and automatic barcode scanning. These features make the app more user-friendly and efficient for aircraft maintenance personnel to document and report quality control inspections.
+The Aviation Quality Control App has been significantly enhanced with improved camera functionality, more reliable barcode scanning, and a more intuitive user interface. Recent fixes have focused on making the app more robust and user-friendly for high-volume photography workflows in shipping & receiving inspection environments. 
+
+The app now provides enterprise-grade functionality with improved error handling, better visual feedback, and optimized performance for industrial use cases. These enhancements make the app more efficient for aviation quality control personnel to document and report inspections while preparing for future ERP integration with Salesforce.

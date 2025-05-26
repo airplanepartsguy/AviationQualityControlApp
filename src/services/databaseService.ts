@@ -40,7 +40,7 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
         id TEXT PRIMARY KEY, -- Use photoData.id (UUID or timestamp-based)
         batchId INTEGER NOT NULL,
         partNumber TEXT, -- Added part number
-        uri TEXT NOT NULL,
+        uri TEXT NOT NULL, -- Original photo URI
         metadataJson TEXT NOT NULL, -- Store PhotoMetadata as JSON string
         annotationsJson TEXT, -- Store AnnotationData[] as JSON string
         FOREIGN KEY (batchId) REFERENCES photo_batches (id) ON DELETE CASCADE
@@ -199,22 +199,24 @@ export const deletePhotoBatch = async (batchId: number): Promise<void> => {
 // --- Photo Operations ---
 
 // Save a single photo linked to a batch
-export const savePhoto = async (batchId: number, photoData: PhotoData): Promise<void> => {
+export const savePhoto = async (batchId: number, photoData: PhotoData): Promise<string> => {
   const database = await openDatabase();
   try {
     // Convert metadata and annotations to JSON strings
     const metadataJson = JSON.stringify(photoData.metadata || {});
     const annotationsJson = photoData.annotations ? JSON.stringify(photoData.annotations) : null;
     const partNumber = photoData.partNumber || null; // Use null for undefined values
-    
+
     await database.runAsync(
       'INSERT OR REPLACE INTO photos (id, batchId, partNumber, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?)',
       [photoData.id, batchId, partNumber, photoData.uri, metadataJson, annotationsJson]
     );
     console.log(`[databaseService] Saved photo ${photoData.id} to batch ${batchId}`);
-  } catch (error) {
-    console.error(`[databaseService] Error saving photo to batch ${batchId}:`, error);
-    throw error;
+    return photoData.id; // Return the ID of the saved photo
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.error(`[databaseService] Error saving photo to batch ${batchId}:`, err);
+    throw err;
   }
 };
 

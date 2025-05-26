@@ -115,10 +115,10 @@ const SyncManager: React.FC<SyncManagerProps> = ({ children }) => {
     <View style={styles.container}>
       {children}
       
-      {/* Floating sync status indicator */}
-      <View style={[styles.indicatorContainer, { bottom: insets.bottom + SPACING.medium }]}>
+      {/* Floating sync status indicator - removed as requested */}
+      {/* <View style={[styles.indicatorContainer, { bottom: insets.bottom + SPACING.medium }]}>
         <SyncStatusIndicator variant="compact" />
-      </View>
+      </View> */}
       
       {/* Sync notification */}
       {showNotification && (

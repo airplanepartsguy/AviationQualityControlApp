@@ -13,8 +13,8 @@ export interface AnnotationData {
 export interface PhotoMetadata {
   timestamp: string; // ISO 8601 format
   userId: string; // Identifier for the user
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | null;
+  longitude?: number | null;
   deviceModel?: string; // Example additional metadata
   hasDefects?: boolean; // Whether defects were identified
   defectSeverity?: 'critical' | 'moderate' | 'minor'; // Severity level of defects
@@ -25,7 +25,6 @@ export interface PhotoMetadata {
 export interface PhotoData {
   id: string; // Unique photo ID (e.g., UUID)
   uri: string; // Local file URI of the original captured image
-  compressedUri?: string; // Local file URI of the compressed image
   batchId: number; // Identifier linking photos in a session (e.g., PK from DB)
   orderNumber?: string; // Extracted/entered order number
   inventoryId?: string; // Extracted/entered inventory ID
@@ -39,7 +38,7 @@ export interface PhotoData {
 // Interface for a batch of photos
 export interface PhotoBatch {
   id: number; // Use Autoincrement ID from DB
-  type: 'Order' | 'Inventory';
+  type: 'Order' | 'Inventory' | 'Single' | 'Batch';
   referenceId: string; // The actual Order Number or Inventory ID value
   orderNumber?: string; // Added for convenience after fetching
   inventoryId?: string; // Added for convenience after fetching
