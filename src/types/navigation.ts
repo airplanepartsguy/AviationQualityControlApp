@@ -12,9 +12,12 @@ export type AuthStackParamList = {
 
 // --- Bottom Tab Navigator ---
 export type BottomTabParamList = {
-  DashboardTab: undefined; // Changed from Home to DashboardTab
-  AnalyticsTab: undefined; // Changed from Analytics to AnalyticsTab
-  // Add other tabs if needed
+  HomeTab: undefined; // Renamed from DashboardTab
+  HistoryTab: undefined; // Replaces AnalyticsTab
+  CaptureActionTab: undefined; // Central action button
+  ERPTab: undefined;
+  AllBatchesTab: undefined; // New tab for all batches view
+  SettingsTab: undefined;
 };
 
 // --- Main Stack Navigator ---
@@ -23,7 +26,7 @@ export interface RootStackParamList {
   [key: string]: object | undefined; // Index signature to satisfy ParamListBase
   MainTabs: { screen: keyof BottomTabParamList }; // Entry point to tabs
   PhotoCapture: 
-    | { mode: 'Single' | 'Batch' | 'Inventory'; userId: string; orderNumber?: string; inventoryId?: string; quickCapture?: boolean } // Starting new
+    | { mode: 'Single' | 'Batch' | 'Inventory'; userId?: string; orderNumber?: string; inventoryId?: string; quickCapture?: boolean } // Starting new
     | { batchId: number }; // Resuming existing batch
   DefectHighlighting: { photo: PhotoData }; // Pass the specific photo to annotate
   Annotation: { photoId: string; photoUri: string; batchId: number; returnToBatch?: boolean }; // Add Annotation Screen
@@ -42,13 +45,23 @@ export interface RootStackParamList {
 // === Screen Props ===
 
 // --- Tab Screen Props ---
-export type DashboardTabScreenProps = CompositeScreenProps<
-  BottomTabScreenProps<BottomTabParamList, 'DashboardTab'>,
+export type HomeTabScreenProps = CompositeScreenProps<
+  BottomTabScreenProps<BottomTabParamList, 'HomeTab'>,
   StackScreenProps<RootStackParamList>
 >;
 
-export type AnalyticsTabScreenProps = CompositeScreenProps<
-  BottomTabScreenProps<BottomTabParamList, 'AnalyticsTab'>,
+export type HistoryTabScreenProps = CompositeScreenProps<
+  BottomTabScreenProps<BottomTabParamList, 'HistoryTab'>,
+  StackScreenProps<RootStackParamList>
+>;
+
+export type ERPTabScreenProps = CompositeScreenProps<
+  BottomTabScreenProps<BottomTabParamList, 'ERPTab'>,
+  StackScreenProps<RootStackParamList>
+>;
+
+export type SettingsTabScreenProps = CompositeScreenProps<
+  BottomTabScreenProps<BottomTabParamList, 'SettingsTab'>,
   StackScreenProps<RootStackParamList>
 >;
 

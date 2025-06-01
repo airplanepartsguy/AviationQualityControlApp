@@ -1,17 +1,19 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
-import * as SecureStore from 'expo-secure-store';
 import { Alert } from 'react-native';
+import { supabase } from '../lib/supabaseClient'; // Adjusted path
+import { Session, User, AuthChangeEvent } from '@supabase/supabase-js';
 
-// Define keys for secure storage
-const TOKEN_KEY = 'userToken';
-const USER_ID_KEY = 'userId';
+import { AuthError } from '@supabase/supabase-js'; // Import AuthError for better typing
 
 interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
-  userId: string | null;
-  login: (username: string, password: string) => Promise<boolean>;
-  logout: () => void;
+  user: User | null;
+  session: Session | null;
+  authError: AuthError | null; // Changed from any to AuthError
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: any }>;
+  signUp: (email: string, password: string) => Promise<{ success: boolean; error?: any; requiresConfirmation?: boolean }>;
+  logout: () => Promise<{ success: boolean; error?: any }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -21,83 +23,133 @@ interface AuthProviderProps {
 }
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Start loading
+  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [authError, setAuthError] = useState<AuthError | null>(null);
 
   useEffect(() => {
-    // Check initial auth status on app load
-    const bootstrapAsync = async () => {
-      try {
-        // Check for both token and userId
-        const userToken = await SecureStore.getItemAsync(TOKEN_KEY);
-        const storedUserId = await SecureStore.getItemAsync(USER_ID_KEY);
+    setIsLoading(true);
+    // Check for an existing session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setIsLoading(false);
+    }).catch(error => {
+      console.error('[AuthContext] Error getting initial session:', error);
+      setIsLoading(false);
+    });
 
-        if (userToken && storedUserId) {
-          // In a real app, validate the token here
-          setIsAuthenticated(true);
-          setUserId(storedUserId);
-        } else {
-          // If either is missing, ensure logged out state
-          setIsAuthenticated(false);
-          setUserId(null);
-        }
-      } catch (e) {
-        console.error('[AuthContext] Failed to load token:', e);
-        // Handle error, maybe clear token
-      } finally {
-        setIsLoading(false);
+    // Listen for auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (event: AuthChangeEvent, session: Session | null) => {
+        console.log('[AuthContext] Auth event:', event, session);
+        setSession(session);
+        setUser(session?.user ?? null);
+        // No need to set isLoading here as it's for initial load or explicit actions
+      }
+    );
+
+    return () => {
+      if (authListener && authListener.subscription) {
+        authListener.subscription.unsubscribe();
       }
     };
-
-    bootstrapAsync();
   }, []);
 
-  const login = async (username: string, password: string): Promise<boolean> => {
+  const login = async (email: string, password: string) => {
+    setAuthError(null); // Clear previous errors
     setIsLoading(true);
-    // Simple static validation for now
-    if (username.toLowerCase() === 'test' && password === 'password') {
-      try {
-        // Store a dummy token for session persistence
-        // Also store the username as userId
-        const loggedInUserId = username.toLowerCase(); // Use username as userId
-        await SecureStore.setItemAsync(TOKEN_KEY, 'dummy-auth-token');
-        await SecureStore.setItemAsync(USER_ID_KEY, loggedInUserId);
-        setIsAuthenticated(true);
-        setUserId(loggedInUserId); // Set userId state
-        setIsLoading(false);
-        return true;
-      } catch (e) {
-        console.error('[AuthContext] Failed to save token:', e);
-        Alert.alert('Login Error', 'Could not save login session.');
-        setIsLoading(false);
-        return false;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email,
+        password: password,
+      });
+      if (error) {
+        setAuthError(error);
+        Alert.alert('Login Failed', error.message);
+        return { success: false, error };
       }
-    } else {
-      Alert.alert('Login Failed', 'Invalid username or password.');
+      // onAuthStateChange will handle setting user and session
+      return { success: true };
+    } catch (error: any) {
+      setAuthError(error as AuthError); // Cast to AuthError
+      Alert.alert('Login Error', error.message || 'An unexpected error occurred.');
+      return { success: false, error };
+    } finally {
       setIsLoading(false);
-      return false;
+    }
+  };
+
+  const signUp = async (email: string, password: string) => {
+    setAuthError(null); // Clear previous errors
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email,
+        password: password,
+        // You can add options here, like redirect URLs or metadata
+        // options: {
+        //   emailRedirectTo: 'yourapp://auth-callback',
+        // }
+      });
+
+      if (error) {
+        setAuthError(error);
+        Alert.alert('Sign Up Failed', error.message);
+        return { success: false, error };
+      }
+      
+      // Check if user exists and session is null - indicates email confirmation might be needed
+      const requiresConfirmation = data.user && !data.session;
+      if (requiresConfirmation) {
+        Alert.alert('Sign Up Successful', 'Please check your email to confirm your account.');
+      }
+      // onAuthStateChange will handle setting user and session if signup is immediate
+      return { success: true, requiresConfirmation: !!requiresConfirmation };
+    } catch (error: any) {
+      setAuthError(error as AuthError);
+      Alert.alert('Sign Up Error', error.message || 'An unexpected error occurred.');
+      return { success: false, error };
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const logout = async () => {
+    setAuthError(null); // Clear previous errors
     setIsLoading(true);
     try {
-      // Clear both token and userId
-      await SecureStore.deleteItemAsync(TOKEN_KEY);
-      await SecureStore.deleteItemAsync(USER_ID_KEY);
-    } catch (e) {
-      console.error('[AuthContext] Failed to delete token:', e);
-      // Still log out the user on the client side
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        setAuthError(error);
+        Alert.alert('Logout Failed', error.message);
+        return { success: false, error };
+      }
+      // onAuthStateChange will handle clearing user and session
+      return { success: true };
+    } catch (error: any) {
+      setAuthError(error as AuthError);
+      Alert.alert('Logout Error', error.message || 'An unexpected error occurred.');
+      return { success: false, error };
     } finally {
-      setIsAuthenticated(false);
-      setUserId(null); // Clear userId state
       setIsLoading(false);
     }
   };
 
   return (
-    <AuthContext.Provider value={{ isLoading, isAuthenticated, userId, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        isLoading,
+        isAuthenticated: !!user, // Derived from user state
+        user,
+        session,
+        authError,
+        login,
+        signUp,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

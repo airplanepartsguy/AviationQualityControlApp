@@ -6,6 +6,25 @@ The Aviation Quality Control App is a React Native application designed for airc
 
 ## Key Features Implemented
 
+### User Authentication & Licensing (Supabase Integration)
+
+Implemented a robust user authentication and session management system using Supabase as the backend. This forms the foundation for a per-user annual subscription model.
+
+- **Supabase Client Setup**: Configured `supabaseClient.ts` to initialize the Supabase client using environment variables (`EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`) and `expo-secure-store` for session persistence.
+- **Authentication Context**: Refactored `AuthContext.tsx` to handle:
+    - User sign-up (`supabase.auth.signUp`), login (`supabase.auth.signInWithPassword`), and logout (`supabase.auth.signOut`).
+    - Session management via `onAuthStateChange` to update user and session state globally.
+    - Loading and error states for auth operations.
+- **Supabase Backend Configuration**:
+    - **`profiles` Table**: Created a `public.profiles` table to store user-specific data linked to `auth.users.id`, including `license_status` and `license_expiry_date`.
+    - **SQL Function & Trigger**: Implemented `public.handle_new_user()` SQL function and a trigger on `auth.users` (for `INSERT` events) to automatically populate the `public.profiles` table upon new user registration.
+    - **Row Level Security (RLS)**: Configured RLS policies on `public.profiles` to ensure users can only access and manage their own data.
+- **Application Code Updates**:
+    - `DashboardScreen.tsx`: Updated to use `AuthContext` for user data, handle nullability of user object, and pass `userId` to data fetching functions.
+    - `navigation.ts`: Adjusted `RootStackParamList` for `PhotoCapture` route to make `userId` optional.
+- **Licensing Model Foundation**: The above setup supports a per-user annual subscription model. License status and expiry will be managed in the `profiles` table. (Future: device management for one-device-at-a-time rule).
+
+
 ### 1. PDF Generation and File Naming
 
 We implemented a robust PDF generation system that creates well-formatted documents with the following features:
@@ -122,51 +141,7 @@ We enhanced the DefectHighlightingScreen with advanced markup capabilities:
 - **Line Thickness Controls**: Options for thin, medium, and thick lines
 - **Color-Coded Severity Levels**: Minor (yellow), Moderate (orange), Critical (red), None (grey)
 - **Text Annotations**: Ability to add text labels directly on the image
-
-**Key Code Snippet (Drawing Tools):**
-```typescript
-// Drawing tool types
-type DrawingTool = 'pointer' | 'circle' | 'rectangle' | 'arrow' | 'freehand' | 'text';
-type DrawingMode = 'draw' | 'select' | 'erase';
-
-// Line thickness options
-const LINE_THICKNESS = {
-  thin: 2,
-  medium: 4,
-  thick: 6
-};
-
-// Handle start of drawing on the image
-const handleDrawStart = useCallback((event: GestureResponderEvent) => {
-  if (!imageUri || currentTool === 'pointer') return;
-  
-  const { locationX, locationY } = event.nativeEvent;
-  setIsDrawing(true);
-  
-  // Initialize path based on selected tool
-  let initialPath = '';
-  
-  switch (currentTool) {
-    case 'freehand':
-      initialPath = `M ${locationX} ${locationY}`;
-      break;
-    case 'circle':
-    case 'rectangle':
-    case 'arrow':
-      // Just store the starting point for shapes
-      initialPath = `${locationX},${locationY}`;
-      break;
-    case 'text':
-      // For text tool, show text input at tap location
-      setTextInputPosition({ x: locationX, y: locationY });
-      setShowTextInput(true);
-      setIsDrawing(false); // Not actually drawing for text
-      return;
-  }
-  
-  setCurrentPath(initialPath);
-}, [imageUri, currentTool]);
-```
+(Note: The DefectHighlightingScreen.tsx component was completely replaced and optimized, improving performance, error handling, memory management, UX, and offline capabilities. The specific code snippet previously here may no longer be representative of the current advanced implementation.)
 
 ### 3. Barcode Scanning for ID Recognition
 
@@ -245,13 +220,23 @@ const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
 - **Better Disabled States**: Clear visual indication when buttons are inactive
 - **More Responsive Controls**: Improved touch responsiveness and haptic feedback
 
-### 3. ID Format Recognition
+### 4. ID Format Recognition
 
 - **More Permissive Validation**: Accepts various ID formats common in aviation environments
 - **Simplified Manual Input**: Clearer error messages with examples of valid formats
 - **Focus Management**: Automatic focus on input fields for better user experience
 
 ## Known Issues and Limitations
+
+### Authentication & Licensing Loose Ends:
+- **UI for Auth Errors**: Login/SignUp screens need to display user-friendly messages based on `error` state from `AuthContext`.
+- **UI for Loading States**: Login/SignUp screens should utilize `isLoading` from `AuthContext` to show activity indicators during auth operations.
+- **Root Navigator Logic**: The main app navigator (`App.tsx` or equivalent) needs to robustly switch between authentication screens (Login/SignUp) and the main application based on `session` or `user` state from `AuthContext`. This is critical for the auth flow to work correctly.
+- **License Management UI**: No UI currently exists for users to view their license status or for admins to manage licenses. This is a future enhancement.
+- **Device Management for Licensing**: The "one active device per license" rule is a future enhancement requiring custom logic (likely Supabase Functions and an `active_devices` table).
+- **Password Reset Flow**: While Supabase supports it, the UI and flow for password reset haven't been explicitly implemented in the app yet.
+- **Email Confirmation Customization**: Supabase email templates for confirmation, password reset, etc., can be customized for branding.
+
 
 1. **iOS Filename Limitations**:
    - iOS has strict limitations on how filenames are handled during sharing
@@ -267,6 +252,22 @@ const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
    - Some reflective surfaces may cause scanning issues
 
 ## Next Steps
+
+### 1. Test User Authentication & Initial Licensing Flow
+- **Verify `.env` file**: Ensure `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` are correctly set in the project's root `.env` file.
+- **Test Sign-Up**: Create a new user through the app.
+    - Verify user creation in `auth.users` table in Supabase.
+    - Verify automatic profile creation in `public.profiles` table with default license status.
+- **Test Login/Logout**: Ensure users can log in with new credentials, are directed to the Dashboard, and can log out.
+- **Session Persistence**: Verify that the session persists after closing and reopening the app.
+- **Review Root Navigator**: Confirm the app correctly navigates between auth screens and main app content based on authentication state.
+
+### 2. Refine Auth UI & User Experience
+- Implement clear error message display on Login/SignUp screens using `error` state from `AuthContext`.
+- Add loading indicators to Login/SignUp screens using `isLoading` state from `AuthContext`.
+- Design and implement a basic password reset flow.
+
+### 3. Further Camera Optimizations
 
 1. **Further Camera Optimizations**:
    - Optimize camera settings for better performance in various lighting conditions
@@ -294,6 +295,10 @@ const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
    - Implement better caching strategies for frequently accessed data
 
 ## Dependencies and APIs
+
+- **Supabase Client (`@supabase/supabase-js`)**: Used for all backend interactions including authentication and database operations.
+- **Expo Secure Store (`expo-secure-store`)**: Used for persisting Supabase session data securely on the device.
+- **React Native URL Polyfill (`react-native-url-polyfill`)**: Required for Supabase client to function correctly in React Native.
 
 - **Expo Camera**: Used for photo capture and barcode scanning with the latest API implementation
 - **Expo Haptics**: Used for providing tactile feedback to users during scanning and photo capture

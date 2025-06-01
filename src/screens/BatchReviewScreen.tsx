@@ -81,7 +81,7 @@ const BatchPreviewScreen: React.FC = () => {
               console.log(`[BatchPreviewScreen] Deleting photo ${photoId}`);
               await deletePhotoById(photoId); 
               logAnalyticsEvent('photo_deleted', { userId, batchId, photoId });
-              setPhotos(currentPhotos => currentPhotos.filter(p => p.id !== photoId));
+              setPhotos((currentPhotos: PhotoData[]) => currentPhotos.filter((p: PhotoData) => p.id !== photoId));
               Alert.alert('Success', 'Photo deleted successfully.');
             } catch (err: any) {
               console.error('[BatchPreviewScreen] Error deleting photo:', err);
@@ -96,10 +96,9 @@ const BatchPreviewScreen: React.FC = () => {
 
   const handleAnnotatePhoto = (photoId: string) => {
     console.log(`[BatchPreviewScreen] Navigating to annotate photo ${photoId} for batch ${batchId}`);
-    // Find the photo in the photos array
-    const photo = photos.find(p => p.id === photoId);
-    if (photo) {
-      navigation.navigate('DefectHighlighting', { photo });
+    const photoToAnnotate = photos.find((p: PhotoData) => p.id === photoId);
+    if (photoToAnnotate) {
+      navigation.navigate('DefectHighlighting', { photo: photoToAnnotate });
     } else {
       console.error(`[BatchPreviewScreen] Photo with ID ${photoId} not found in batch`);
       Alert.alert('Error', 'Photo not found in batch. Please try again.');
@@ -139,6 +138,7 @@ const BatchPreviewScreen: React.FC = () => {
     <View style={styles.photoItemContainer}>
       <Image source={{ uri: item.uri }} style={styles.thumbnail} />
       <View style={styles.photoDetails}>
+        <Text style={styles.detailText}>Title: {item.photoTitle || 'N/A'}</Text>
         <Text style={styles.detailText}>Part No: {item.partNumber || 'N/A'}</Text>
         <Text style={styles.detailText}>Equipment: {(item.metadata as any)?.equipmentId || 'Unknown'}</Text>
         <Text style={styles.detailText}>Component: {(item.metadata as any)?.componentId || 'Unknown'}</Text>
@@ -186,7 +186,9 @@ const BatchPreviewScreen: React.FC = () => {
     );
   }
 
-  const batchTitle = batchDetails?.orderNumber
+  const batchTitle = batchDetails?.referenceId
+    ? `${batchDetails.referenceId}` // Display referenceId directly. Add prefix if needed based on type.
+    : batchDetails?.orderNumber
     ? `Order #${batchDetails.orderNumber}`
     : batchDetails?.inventoryId
     ? `Inventory ${batchDetails.inventoryId}`
@@ -205,7 +207,7 @@ const BatchPreviewScreen: React.FC = () => {
       <FlatList
         data={photos}
         renderItem={renderPhotoItem}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item: PhotoData) => item.id}
         contentContainerStyle={styles.listContentContainer}
         ListHeaderComponent={renderListHeader} 
         ListEmptyComponent={<Text style={styles.emptyText}>No photos in this batch yet. Tap 'Add More Photos' to start.</Text>}

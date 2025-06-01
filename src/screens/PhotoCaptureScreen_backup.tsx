@@ -1341,7 +1341,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style="light" backgroundColor={COLORS.black} />
         {/* Main content View starts here, after StatusBar and potential global overlays */}
-        <View style={{flex: 1}}> 
+        <View style={{flex: 1}}>
 
           {feedback.visible && (
             <Animated.View style={[styles.successFeedback, { opacity: feedbackOpacity, zIndex: 20 }]}>
@@ -1405,7 +1405,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             </View>
           )}
           </View>
-          {/* Closing Wrapper View for PinchGestureHandler */}
+        {/* Closing Wrapper View for PinchGestureHandler */}
       </PinchGestureHandler>
 
       {/* TOP OVERLAY CONTROLS */}
@@ -1477,112 +1477,115 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
           )}
         </View>
       </View>
-
-    </View> {/* End of cameraWrapper */}
-        
-    {/* PHOTO CLASSIFICATION DROPDOWN - Using simplified approach for all platforms */}
-    <View style={{
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingHorizontal: SPACING.medium,
-      paddingVertical: SPACING.small,
-      backgroundColor: COLORS.grey900,
-      borderTopWidth: 1,
-      borderTopColor: COLORS.grey800,
-    }}>
-      <Text style={{
-        fontSize: FONTS.small,
-        fontWeight: FONTS.semiBold,
-        color: COLORS.white,
-        marginRight: SPACING.small,
-      }}>Photo Type:</Text>
+      {/* End of cameraWrapper */}
       
-      {/* Using touchable for all platforms to avoid text string errors with Picker */}
-      <TouchableOpacity 
-        style={{
-          flex: 1,
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          padding: SPACING.small,
-          borderRadius: BORDER_RADIUS.small,
-          backgroundColor: 'rgba(0,0,0,0.4)',
-        }}
-        onPress={() => {
-          Alert.alert(
-            'Select Photo Type',
-            'Choose the type of photo you are taking:',
-            PHOTO_TITLE_OPTIONS.map(option => ({
-              text: option,
-              onPress: () => setSelectedPhotoTitle(option)
-            })),
-            { cancelable: true }
-          );
-        }}
-      >
-        <Text style={{ color: COLORS.white }}>{selectedPhotoTitle}</Text>
-        <Ionicons name="chevron-down" size={16} color={COLORS.white} />
-      </TouchableOpacity>
-    </View>
+      {/* PHOTO CLASSIFICATION DROPDOWN - Using simplified approach for all platforms */}
+      <View style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: SPACING.medium,
+        paddingVertical: SPACING.small,
+        backgroundColor: COLORS.grey900,
+        borderTopWidth: 1,
+        borderTopColor: COLORS.grey800,
+      }}>
+        <Text style={{
+          fontSize: FONTS.small,
+          fontWeight: FONTS.semiBold,
+          color: COLORS.white,
+          marginRight: SPACING.small,
+        }}>Photo Type:</Text>
+        
+        {/* Using touchable for all platforms to avoid text string errors with Picker */}
+        <TouchableOpacity 
+          style={{
+            flex: 1,
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: SPACING.small,
+            borderRadius: BORDER_RADIUS.small,
+            backgroundColor: 'rgba(0,0,0,0.4)',
+          }}
+          onPress={() => {
+            Alert.alert(
+              'Select Photo Type',
+              'Choose the type of photo you are taking:',
+              PHOTO_TITLE_OPTIONS.map(option => ({
+                text: option,
+                onPress: () => setSelectedPhotoTitle(option)
+              })),
+              { cancelable: true }
+            );
+          }}
+        >
+          <Text style={{ color: COLORS.white }}>{selectedPhotoTitle}</Text>
+          <Ionicons name="chevron-down" size={16} color={COLORS.white} />
+        </TouchableOpacity>
+      </View>
 
-    {/* BOTTOM ACTION AREA */}
-    <View style={[styles.bottomActionArea, { paddingBottom: Math.max(insets.bottom, SPACING.medium) }]}>
-      <View style={styles.bottomControlsRow}>
-        {/* Left Section: Gallery + Picker */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', width: '30%' }}> 
-          <TouchableOpacity
-            style={styles.galleryButton}
-            onPress={() => { if (currentBatch) { navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier: currentBatch.referenceId }); } }}
-            disabled={isLoading || !currentBatch}
-          >
-            {lastCapturedPhoto ? (
-              <Image source={{ uri: lastCapturedPhoto.uri }} style={{ width: '100%', height: '100%', borderRadius: BORDER_RADIUS.medium }} />
-            ) : (
-              <Ionicons name="images" size={28} color={COLORS.white} />
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* Center: Capture Button */}
-        <View style={{ alignItems: 'center', justifyContent: 'center', width: '40%' }}>
-          <TouchableOpacity
-            style={[styles.captureButton, (isCapturing || !cameraReady || !currentBatch) && styles.captureButtonDisabled]}
-            onPress={() => takePicture(false)}
-            disabled={isCapturing || !cameraReady || !currentBatch || isLoading}
-          >
-            <View style={styles.captureButtonInner} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Right Section: Review Button Only */}
-        <View style={{ alignItems: 'center', justifyContent: 'center', width: '30%', paddingRight: SPACING.small }}>
-          {currentBatch && (
-            <TouchableOpacity 
-              style={[
-                styles.finishButton,
-                (isLoading || photoBatch.length === 0) && styles.disabledButton
-              ]}
-              onPress={() => {
-                if (currentBatch) {
-                  navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier: currentBatch.referenceId || identifier });
-                }
-              }}
-              disabled={isLoading || !currentBatch || photoBatch.length === 0}
+      {/* BOTTOM ACTION AREA */}
+      <View style={[styles.bottomActionArea, { paddingBottom: Math.max(insets.bottom, SPACING.medium) }]}>
+        <View style={styles.bottomControlsRow}>
+          {/* Left Section: Gallery + Picker */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', width: '30%' }}> 
+            <TouchableOpacity
+              style={styles.galleryButton}
+              onPress={() => { if (currentBatch) { navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier: currentBatch.referenceId }); } }}
+              disabled={isLoading || !currentBatch}
             >
-              <View style={styles.finishButtonContent}>
-                <Text style={styles.finishButtonText}>
-                  Review ({photoBatch.length || 0})
-                </Text>
-                <Ionicons name="arrow-forward" size={18} color={COLORS.white} style={{marginLeft: SPACING.small}} />
-              </View>
+              {lastCapturedPhoto && lastCapturedPhoto.uri ? (
+                <Image 
+                  source={{ uri: lastCapturedPhoto.uri }} 
+                  style={{ width: '100%', height: '100%', borderRadius: BORDER_RADIUS.medium }} 
+                />
+              ) : (
+                <Ionicons name="images" size={28} color={COLORS.white} />
+              )}
             </TouchableOpacity>
-          )}
+          </View>
+
+          {/* Center: Capture Button */}
+          <View style={{ alignItems: 'center', justifyContent: 'center', width: '40%' }}>
+            <TouchableOpacity
+              style={[styles.captureButton, (isCapturing || !cameraReady || !currentBatch) && styles.captureButtonDisabled]}
+              onPress={() => takePicture(false)}
+              disabled={isCapturing || !cameraReady || !currentBatch || isLoading}
+            >
+              <View style={styles.captureButtonInner} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Right Section: Review Button Only */}
+          <View style={{ alignItems: 'center', justifyContent: 'center', width: '30%', paddingRight: SPACING.small }}>
+            {currentBatch && (
+              <TouchableOpacity 
+                style={[
+                  styles.finishButton,
+                  (isLoading || photoBatch.length === 0) && styles.disabledButton
+                ]}
+                onPress={() => {
+                  if (currentBatch) {
+                    navigation.navigate('BatchPreview', { batchId: currentBatch.id, identifier: currentBatch.referenceId || identifier });
+                  }
+                }}
+                disabled={isLoading || !currentBatch || photoBatch.length === 0}
+              >
+                <View style={styles.finishButtonContent}>
+                  <Text style={styles.finishButtonText}>
+                    Review ({photoBatch.length || 0})
+                  </Text>
+                  <Ionicons name="arrow-forward" size={18} color={COLORS.white} style={{marginLeft: SPACING.small}} />
+                </View>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
-        </View>
-      </SafeAreaView>
-    </GestureHandlerRootView>
-  );
+      </View>
+    </View>
+  </SafeAreaView>
+</GestureHandlerRootView>
+);
 };
 
 export default PhotoCaptureScreen;
-

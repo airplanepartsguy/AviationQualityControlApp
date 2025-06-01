@@ -314,7 +314,7 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       <View style={styles.photoItemContainer}>
         <Image source={{ uri: item.uri }} style={styles.thumbnail} />
         <View style={styles.photoInfo}>
-          <Text style={styles.infoText}>Part: {item.partNumber || 'No Part Number'}</Text>
+          <Text style={styles.infoText}>Type: {item.photoTitle || 'General Picture'}</Text>
           <Text style={styles.infoText}>
             {new Date(item.metadata.timestamp).toLocaleString()}
           </Text>

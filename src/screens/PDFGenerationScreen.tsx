@@ -428,7 +428,12 @@ const PDFGenerationScreen = ({ route, navigation }: PDFGenerationScreenProps) =>
       if (batch && photos.length > 0) {
         // Filter photos based on pictureType if needed
         const filteredPhotos = pictureType === 'Defect Pictures' 
-          ? photos.filter(photo => photo.isDefect) 
+          ? photos.filter(photo => 
+              // Check both the photoTitle and metadata.hasDefects
+              photo.isDefect || 
+              photo.metadata?.hasDefects || 
+              photo.photoTitle === 'Defect'
+            ) 
           : photos;
         
         console.log(`[PDFGenerationScreen] Using ${filteredPhotos.length} ${pictureType} for PDF generation`);

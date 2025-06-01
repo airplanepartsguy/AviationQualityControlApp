@@ -1578,6 +1578,8 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             </TouchableOpacity>
           )}
         </View>
+      </View>
+    </View>
         </View>
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -1585,4 +1587,3 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
 };
 
 export default PhotoCaptureScreen;
-

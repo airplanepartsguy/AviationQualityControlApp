@@ -4,6 +4,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, FONTS, SHADOWS, BORDER_RADIUS } from '../styles/theme';
 import salesforceService from '../services/salesforceService';
 import { QueueStatus } from '../types/data';
+
+// Define Props for the component
+interface SyncStatusPanelProps {
+  mode?: 'compact' | 'full';
+  onPressCompact?: () => void;
+}
 import { useNetworkStatus } from '../services/networkService';
 
 /**
@@ -18,7 +24,7 @@ import { useNetworkStatus } from '../services/networkService';
  * - Retry failed tasks button
  * - Network status awareness
  */
-const SyncStatusPanel: React.FC = () => {
+const SyncStatusPanel: React.FC<SyncStatusPanelProps> = ({ mode = 'full', onPressCompact }) => {
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -92,6 +98,64 @@ const SyncStatusPanel: React.FC = () => {
     }
   };
 
+  // COMPACT MODE RENDERING
+  if (mode === 'compact') {
+    if (!queueStatus && isRefreshing) {
+      return (
+        <View style={styles.compactLoadingContainer}>
+          <ActivityIndicator size="small" color={COLORS.primary} />
+        </View>
+      );
+    }
+
+    let iconName: React.ComponentProps<typeof Ionicons>['name'] = 'cloud-offline-outline';
+    let iconColor = COLORS.textLight;
+    let statusText = 'Offline';
+
+    if (isConnected) {
+      if (isSyncing) {
+        iconName = 'cloud-upload-outline';
+        iconColor = COLORS.primary;
+        statusText = 'Syncing...';
+      } else if (queueStatus) {
+        if (queueStatus.failed > 0) {
+          iconName = 'cloud-offline-outline'; // Or a warning icon like 'alert-circle-outline'
+          iconColor = COLORS.error;
+          statusText = `${queueStatus.failed} Failed`;
+        } else if (queueStatus.pending > 0) {
+          iconName = 'cloud-upload-outline';
+          iconColor = COLORS.warning; // Use warning for pending, as it's not fully synced
+          statusText = `${queueStatus.pending} Pending`;
+        } else {
+          iconName = 'cloud-done-outline';
+          iconColor = COLORS.success;
+          statusText = 'Synced';
+        }
+      }
+    } else { // Explicitly offline
+      iconName = 'cloud-offline-outline';
+      iconColor = COLORS.error; // More prominent for offline
+      statusText = 'Offline';
+    }
+
+    const CompactViewContent = (
+      <View style={styles.compactContainer}>
+        <Ionicons name={iconName} size={18} color={iconColor} style={styles.compactIcon} />
+        <Text style={[styles.compactText, { color: iconColor }]}>{statusText}</Text>
+      </View>
+    );
+
+    if (onPressCompact) {
+      return (
+        <TouchableOpacity onPress={onPressCompact} activeOpacity={0.7}>
+          {CompactViewContent}
+        </TouchableOpacity>
+      );
+    }
+    return CompactViewContent;
+  }
+
+  // FULL MODE RENDERING (Original logic starts here)
   // If we don't have queue status yet, show a loading indicator
   if (!queueStatus && isRefreshing) {
     return (
@@ -324,6 +388,26 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     textAlign: 'center',
     marginVertical: SPACING.small,
+  },
+  // Compact mode styles
+  compactContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.tiny, // Minimal padding for embedding
+    paddingHorizontal: SPACING.small,
+    borderRadius: BORDER_RADIUS.small,
+    // No background or shadow by default, designed to be embedded
+  },
+  compactLoadingContainer: {
+    paddingVertical: SPACING.tiny,
+    paddingHorizontal: SPACING.small,
+  },
+  compactIcon: {
+    marginRight: SPACING.tiny,
+  },
+  compactText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.normal, // Corrected from FONTS.regular
   },
 });
 

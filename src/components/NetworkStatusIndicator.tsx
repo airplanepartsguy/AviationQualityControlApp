@@ -126,7 +126,7 @@ const NetworkStatusIndicator: React.FC<NetworkStatusIndicatorProps> = ({
         color={isConnected ? COLORS.success : COLORS.error} 
       />
       
-      {showLabel && (
+      {showLabel ? (
         <Text 
           style={[
             styles.statusText, 
@@ -139,9 +139,9 @@ const NetworkStatusIndicator: React.FC<NetworkStatusIndicatorProps> = ({
         >
           {isConnected ? 'Online' : 'Offline'}
         </Text>
-      )}
+      ) : null}
       
-      {showConnectionType && isConnected && (
+      {showConnectionType && isConnected ? (
         <Text 
           style={[
             styles.connectionTypeText,
@@ -150,7 +150,7 @@ const NetworkStatusIndicator: React.FC<NetworkStatusIndicatorProps> = ({
         >
           ({getConnectionTypeLabel()})
         </Text>
-      )}
+      ) : null}
     </Animated.View>
   );
 };

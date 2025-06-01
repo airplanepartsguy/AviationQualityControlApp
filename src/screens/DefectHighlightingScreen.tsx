@@ -67,11 +67,21 @@ const LINE_THICKNESS = {
  * - Includes offline capability considerations
  */
 const DefectHighlightingScreen: React.FC<DefectHighlightingScreenProps> = () => {
+  console.log('[DefectHighlightingScreen] Component mounted.'); // <-- ADD THIS
   // Track component renders in development mode
   useRenderTracker('DefectHighlightingScreen');
   const navigation = useNavigation<DefectHighlightingScreenProps['navigation']>();
   const route = useRoute<DefectHighlightingScreenProps['route']>();
+  
+  console.log('[DefectHighlightingScreen] route.params:', JSON.stringify(route.params, null, 2)); // <-- ADD THIS
   const { photo } = route.params || {};
+  
+  console.log('[DefectHighlightingScreen] Received photo object:', JSON.stringify(photo, null, 2)); // <-- ADD THIS
+  if (photo && photo.uri) {
+    console.log('[DefectHighlightingScreen] Photo URI to load:', photo.uri); // <-- ADD THIS
+  } else {
+    console.warn('[DefectHighlightingScreen] Photo URI is missing or photo object is invalid.'); // <-- ADD THIS
+  }
   
   // State for defect status
   const [hasDefects, setHasDefects] = useState<boolean>(false);

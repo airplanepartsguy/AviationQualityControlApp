@@ -22,6 +22,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
 };
 
 const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void> => {
+  console.log('[DB_DEBUG] initializeDatabase: Starting initialization...');
   console.log('[databaseService] Initializing database tables...');
   try {
     await database.execAsync(`
@@ -29,6 +30,7 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
 
       CREATE TABLE IF NOT EXISTS photo_batches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        referenceId TEXT, -- Added to store the original scanned/entered ID
         orderNumber TEXT,
         inventoryId TEXT,
         userId TEXT NOT NULL,
@@ -40,6 +42,7 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
         id TEXT PRIMARY KEY, -- Use photoData.id (UUID or timestamp-based)
         batchId INTEGER NOT NULL,
         partNumber TEXT, -- Added part number
+        photoTitle TEXT, -- User-selected title for the photo
         uri TEXT NOT NULL, -- Original photo URI
         metadataJson TEXT NOT NULL, -- Store PhotoMetadata as JSON string
         annotationsJson TEXT, -- Store AnnotationData[] as JSON string
@@ -50,9 +53,10 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
       CREATE INDEX IF NOT EXISTS idx_photos_batchId ON photos(batchId);
       CREATE INDEX IF NOT EXISTS idx_batches_status ON photo_batches(status);
     `);
-    console.log('[databaseService] Database tables initialized successfully.');
+    console.log('[DB_DEBUG] initializeDatabase: CREATE TABLE statements executed.');
+    console.log('[DB_DEBUG] initializeDatabase: Database tables initialized successfully.');
   } catch (error) {
-    console.error('[databaseService] Error initializing database tables:', error);
+    console.error('[DB_DEBUG] initializeDatabase: Error initializing database tables:', error);
     throw error;
   }
 };
@@ -62,22 +66,26 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
 // Create a new batch record and return its ID
 export const createPhotoBatch = async (
   userId: string,
+  referenceId?: string, 
   orderNumber?: string,
   inventoryId?: string
 ): Promise<number> => {
+  console.log(`[DB_DEBUG] createPhotoBatch: Called with userId=${userId}, referenceId=${referenceId}, orderNumber=${orderNumber}, inventoryId=${inventoryId}`);
   const database = await openDatabase();
   try {
+    console.log('[DB_DEBUG] createPhotoBatch: Attempting to insert into photo_batches...');
     const result = await database.runAsync(
-      'INSERT INTO photo_batches (userId, orderNumber, inventoryId) VALUES (?, ?, ?)',
-      [userId, orderNumber ?? null, inventoryId ?? null]
+      'INSERT INTO photo_batches (userId, referenceId, orderNumber, inventoryId) VALUES (?, ?, ?, ?)',
+      [userId, referenceId ?? null, orderNumber ?? null, inventoryId ?? null]
     );
+    console.log(`[DB_DEBUG] createPhotoBatch: Insert result - lastInsertRowId: ${result.lastInsertRowId}, changes: ${result.changes}`);
     if (result.lastInsertRowId === undefined) {
         throw new Error('Failed to get last insert row ID for photo batch.');
     }
     console.log(`[databaseService] Created photo batch with ID: ${result.lastInsertRowId}`);
     return result.lastInsertRowId;
   } catch (error) {
-    console.error('[databaseService] Error creating photo batch:', error);
+    console.error('[DB_DEBUG] createPhotoBatch: Error creating photo batch:', error);
     throw error;
   }
 };
@@ -206,10 +214,11 @@ export const savePhoto = async (batchId: number, photoData: PhotoData): Promise<
     const metadataJson = JSON.stringify(photoData.metadata || {});
     const annotationsJson = photoData.annotations ? JSON.stringify(photoData.annotations) : null;
     const partNumber = photoData.partNumber || null; // Use null for undefined values
+    const photoTitle = photoData.photoTitle || 'General Picture'; // Default if undefined
 
     await database.runAsync(
-      'INSERT OR REPLACE INTO photos (id, batchId, partNumber, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?)',
-      [photoData.id, batchId, partNumber, photoData.uri, metadataJson, annotationsJson]
+      'INSERT OR REPLACE INTO photos (id, batchId, partNumber, photoTitle, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [photoData.id, batchId, partNumber, photoTitle, photoData.uri, metadataJson, annotationsJson]
     );
     console.log(`[databaseService] Saved photo ${photoData.id} to batch ${batchId}`);
     return photoData.id; // Return the ID of the saved photo
@@ -324,13 +333,14 @@ export const getPhotosForBatch = async (batchId: number): Promise<PhotoData[]> =
       id: string;
       batchId: number;
       partNumber?: string; // Added partNumber, make optional if it can be null
+      photoTitle?: string; // Added photoTitle
       uri: string;
       metadataJson: string;
       annotationsJson?: string;
       // Add other fields from the photos table if necessary
   }
   const results = await db.getAllAsync<PhotoRow>(
-    'SELECT * FROM photos WHERE batchId = ?',
+    'SELECT id, batchId, partNumber, photoTitle, uri, metadataJson, annotationsJson FROM photos WHERE batchId = ?', // Explicitly list columns
     [batchId]
   );
   // Manually parse metadata back into an object
@@ -339,6 +349,7 @@ export const getPhotosForBatch = async (batchId: number): Promise<PhotoData[]> =
     uri: row.uri,
     batchId: row.batchId,
     partNumber: row.partNumber || '', // Provide default or handle potential null
+    photoTitle: row.photoTitle || 'General Picture', // Add photoTitle, default if null
     metadata: JSON.parse(row.metadataJson || '{}'), // Ensure metadata is parsed from JSON string
     annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined, // Parse annotations if they exist
     syncStatus: 'pending' // Default sync status since it's not stored in the database
@@ -348,7 +359,7 @@ export const getPhotosForBatch = async (batchId: number): Promise<PhotoData[]> =
 // Fetches batch details and all associated photos
 export const getBatchDetails = async (batchId: number): Promise<{ batch: PhotoBatch | null; photos: PhotoData[] }> => {
   const db = await openDatabase();
-  const batchRow = await db.getFirstAsync<any>('SELECT * FROM photo_batches WHERE id = ?', [batchId]);
+  const batchRow = await db.getFirstAsync<any>('SELECT id, referenceId, orderNumber, inventoryId, userId, createdAt, status FROM photo_batches WHERE id = ?', [batchId]);
   const photos = await getPhotosForBatch(batchId); // Reuse existing function
   
   // If no batch was found, return null
@@ -359,8 +370,8 @@ export const getBatchDetails = async (batchId: number): Promise<{ batch: PhotoBa
   // Map the database row to a PhotoBatch object
   const batch: PhotoBatch = {
     id: batchRow.id,
-    type: batchRow.orderNumber ? 'Order' : 'Inventory',
-    referenceId: batchRow.orderNumber || batchRow.inventoryId || `batch-${batchRow.id}`,
+    type: batchRow.referenceId?.startsWith('ORD-') ? 'Order' : (batchRow.referenceId?.startsWith('INV-') ? 'Inventory' : (batchRow.orderNumber ? 'Order' : (batchRow.inventoryId ? 'Inventory' : 'Single'))),
+    referenceId: batchRow.referenceId, // Use the direct referenceId
     orderNumber: batchRow.orderNumber,
     inventoryId: batchRow.inventoryId,
     userId: batchRow.userId,
@@ -386,13 +397,15 @@ export const deleteBatch = async (batchId: number): Promise<void> => {
 };
 
 // Get recent batches for a user with limit
-export const getRecentBatches = async (userId: string, limit: number = 10): Promise<any[]> => {
+export const getRecentBatches = async (userId: string, limit: number = 10): Promise<BatchListItem[]> => {
+  console.log(`[DB_DEBUG] getRecentBatches: Called with userId=${userId}, limit=${limit}`);
   const db = await openDatabase();
   try {
     // Get batches with photo counts
-    const batches = await db.getAllAsync<any>(`
+    const batches = await db.getAllAsync<RawBatchData>(`
       SELECT 
         pb.id, 
+        pb.referenceId, -- Added referenceId
         pb.orderNumber, 
         pb.inventoryId, 
         pb.createdAt, 
@@ -410,17 +423,27 @@ export const getRecentBatches = async (userId: string, limit: number = 10): Prom
         pb.createdAt DESC
       LIMIT ?
     `, [userId, limit]);
+    console.log('[DB_DEBUG] getRecentBatches: Raw batches from DB:', JSON.stringify(batches, null, 2));
     
-    return batches.map(batch => ({
+    const mappedBatches = batches.map(batch => ({
       id: batch.id.toString(), // Convert to string for consistency
-      orderNumber: batch.orderNumber,
-      inventoryId: batch.inventoryId,
+      referenceId: batch.referenceId || `Batch #${batch.id.toString().substring(0, 6)}`, // Primary display ID
+      orderNumber: batch.orderNumber, // Actual orderNumber from DB (can be null)
+      inventoryId: batch.inventoryId, // Actual inventoryId from DB (can be null)
       createdAt: batch.createdAt,
-      syncStatus: batch.syncStatus || 'complete',
-      photoCount: batch.photoCount || 0
+      syncStatus: batch.syncStatus || 'complete', // Default to 'complete' if null
+      photoCount: batch.photoCount || 0,
+      // Determine type based on referenceId primarily, then orderNumber, then inventoryId
+      type: (batch.referenceId?.startsWith('ORD-') ? 'Order' 
+            : batch.referenceId?.startsWith('INV-') ? 'Inventory' 
+            : batch.orderNumber ? 'Order' 
+            : batch.inventoryId ? 'Inventory' 
+            : 'Unknown') as BatchListItem['type']
     }));
+    console.log('[DB_DEBUG] getRecentBatches: Mapped batches:', JSON.stringify(mappedBatches, null, 2));
+    return mappedBatches;
   } catch (error) {
-    console.error('[databaseService] Error fetching recent batches:', error);
+    console.error('[DB_DEBUG] getRecentBatches: Error fetching recent batches:', error);
     return [];
   }
 };
@@ -466,6 +489,79 @@ export const getDailyStats = async (userId: string): Promise<{ photosToday: numb
       batchesCompleted: 0,
       pendingSync: 0
     };
+  }
+};
+
+
+// Raw data structure from the photo_batches table with photo count
+interface RawBatchData {
+  id: number;
+  referenceId: string | null;
+  orderNumber: string | null;
+  inventoryId: string | null;
+  createdAt: string;
+  syncStatus: string | null;
+  photoCount: number;
+}
+
+// Define a type for the items returned by getAllPhotoBatchesForUser and getRecentBatches
+export interface BatchListItem {
+  id: string;
+  referenceId: string; // Primary display ID
+  orderNumber?: string | null;
+  inventoryId?: string | null;
+  createdAt: string;
+  syncStatus: string; // 'pending', 'completed', 'synced', etc.
+  photoCount: number;
+  type: 'Order' | 'Inventory' | 'Unknown';
+}
+
+// Get all batches for a user
+export const getAllPhotoBatchesForUser = async (userId: string): Promise<BatchListItem[]> => {
+  console.log(`[DB_DEBUG] getAllPhotoBatchesForUser: Called with userId=${userId}`);
+  const db = await openDatabase();
+  try {
+    const batches = await db.getAllAsync<RawBatchData>(`
+      SELECT 
+        pb.id, 
+        pb.referenceId,
+        pb.orderNumber, 
+        pb.inventoryId, 
+        pb.createdAt, 
+        pb.status as syncStatus,
+        COUNT(p.id) as photoCount
+      FROM 
+        photo_batches pb
+      LEFT JOIN 
+        photos p ON pb.id = p.batchId
+      WHERE 
+        pb.userId = ?
+      GROUP BY 
+        pb.id
+      ORDER BY 
+        pb.createdAt DESC
+    `, [userId]);
+    console.log('[DB_DEBUG] getAllPhotoBatchesForUser: Raw batches from DB:', JSON.stringify(batches, null, 2));
+    
+    const mappedBatches: BatchListItem[] = batches.map(batch => ({
+      id: batch.id.toString(),
+      referenceId: batch.referenceId || `Batch #${batch.id.toString().substring(0, 6)}`,
+      orderNumber: batch.orderNumber,
+      inventoryId: batch.inventoryId,
+      createdAt: batch.createdAt,
+      syncStatus: batch.syncStatus || 'complete',
+      photoCount: batch.photoCount || 0,
+      type: (batch.referenceId?.startsWith('ORD-') ? 'Order' 
+            : batch.referenceId?.startsWith('INV-') ? 'Inventory' 
+            : batch.orderNumber ? 'Order' 
+            : batch.inventoryId ? 'Inventory' 
+            : 'Unknown') as BatchListItem['type']
+    }));
+    console.log('[DB_DEBUG] getAllPhotoBatchesForUser: Mapped batches:', JSON.stringify(mappedBatches, null, 2));
+    return mappedBatches;
+  } catch (error) {
+    console.error('[DB_DEBUG] getAllPhotoBatchesForUser: Error fetching all batches:', error);
+    return [];
   }
 };
 

@@ -29,6 +29,7 @@ export interface PhotoData {
   orderNumber?: string; // Extracted/entered order number
   inventoryId?: string; // Extracted/entered inventory ID
   partNumber?: string; // Optional part number
+  photoTitle?: string; // User-selected title/type for the photo (e.g., 'Data plate', 'General Picture')
   metadata: PhotoMetadata;
   annotations?: AnnotationData[]; // Array to hold annotation data
   annotationSavedUri?: string; // URI of the photo *with* annotation drawn on it (optional)

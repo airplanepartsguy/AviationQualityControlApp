@@ -12,17 +12,22 @@ import {
   TouchableOpacity,
   TextInput,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import CustomInput from '../components/CustomInput';
 import { useAuth } from '../contexts/AuthContext';
+import { AuthStackParamList } from '../../App'; // Import the AuthStackParamList
 import { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } from '../styles/theme';
-import { SvgUri } from 'react-native-svg';
+// import { SvgUri } from 'react-native-svg'; // No longer needed for local SVG
+import Logo from '../../assets/QCpics logo.svg'; // Import SVG as a component
 
-const logoUri = '../../assets/QCpics logo.svg';
+type LoginScreenNavigationProp = StackNavigationProp<AuthStackParamList, 'Login'>;
 
 const LoginScreen: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const { login, isLoading } = useAuth();
+  const { login, isLoading, authError } = useAuth(); // Added authError for consistency, though not used in this snippet directly for navigation
+  const navigation = useNavigation<LoginScreenNavigationProp>();
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) {
@@ -39,12 +44,7 @@ const LoginScreen: React.FC = () => {
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.logoContainer}>
-          <SvgUri
-            width="80%"
-            height={150}
-            uri={logoUri}
-            onError={(error) => console.error('SVG Error:', error)}
-          />
+          <Logo width="80%" height={150} />
           <Text style={styles.title}>Quality Control PIC</Text>
         </View>
         <View style={styles.formContainer}>
@@ -80,6 +80,12 @@ const LoginScreen: React.FC = () => {
               <Text style={styles.buttonText}>Login</Text>
             )}
           </TouchableOpacity>
+          <TouchableOpacity style={styles.signUpLinkContainer} onPress={() => navigation.navigate('SignUp')} disabled={isLoading}>
+            <Text style={styles.signUpLinkText}>
+              Don't have an account? <Text style={styles.signUpLinkTextBold}>Sign Up</Text>
+            </Text>
+          </TouchableOpacity>
+          {authError && <Text style={styles.errorText}>{authError.message || 'An unexpected error occurred.'}</Text>}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -144,6 +150,24 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontSize: FONTS.large,
     fontWeight: FONTS.bold,
+  },
+  signUpLinkContainer: {
+    marginTop: SPACING.medium,
+    alignItems: 'center',
+  },
+  signUpLinkText: {
+    fontSize: FONTS.medium,
+    color: COLORS.textLight,
+  },
+  signUpLinkTextBold: {
+    fontWeight: FONTS.bold,
+    color: COLORS.primary, // Or your preferred link color
+  },
+  errorText: {
+    marginTop: SPACING.medium,
+    color: COLORS.error, // Use existing COLORS.error from theme
+    textAlign: 'center',
+    fontSize: FONTS.small,
   },
 });
 

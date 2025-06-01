@@ -1405,7 +1405,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             </View>
           )}
           </View>
-          {/* Closing Wrapper View for PinchGestureHandler */}
+        {/* Closing Wrapper View for PinchGestureHandler */}
       </PinchGestureHandler>
 
       {/* TOP OVERLAY CONTROLS */}
@@ -1578,11 +1578,12 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             </TouchableOpacity>
           )}
         </View>
-        </View>
+      </View>
+    </View>
+          </View>
       </SafeAreaView>
     </GestureHandlerRootView>
   );
 };
 
 export default PhotoCaptureScreen;
-

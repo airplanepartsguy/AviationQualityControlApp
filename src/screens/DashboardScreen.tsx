@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, Fragment } from 'react';
 import { 
   View, 
   Text, 
@@ -11,7 +11,8 @@ import {
   Dimensions, 
   FlatList,
   ActivityIndicator,
-  RefreshControl
+  RefreshControl,
+  Modal // Added Modal import
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -19,7 +20,7 @@ import { useAuth } from '../contexts/AuthContext';
 import CustomButton from '../components/CustomButton'; 
 import SyncStatusPanel from '../components/SyncStatusPanel';
 import NetworkStatusIndicator from '../components/NetworkStatusIndicator';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../styles/theme'; 
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, CARD_STYLES, BUTTON_STYLES } from '../styles/theme'; 
 import { Ionicons } from '@expo/vector-icons'; 
 import { RootStackParamList } from '../types/navigation';
 import salesforceService from '../services/salesforceService';
@@ -32,17 +33,18 @@ type DashboardScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Ma
 // Type for recent batch item
 type RecentBatchItem = {
   id: string;
-  orderNumber: string | null;
+  referenceId: string; // The actual scanned/entered ID
+  orderNumber: string; // Now guaranteed by databaseService.getRecentBatches
   createdAt: string;
   photoCount: number;
-  status: 'complete' | 'in_progress' | 'syncing';
+  status: 'complete' | 'in_progress' | 'syncing' | 'error' | 'exported'; 
+  type?: 'Order' | 'Inventory' | 'Unknown'; 
 };
 
 const DashboardScreen: React.FC = () => { 
   const navigation = useNavigation<DashboardScreenNavigationProp>();
-  const { logout, userId } = useAuth(); 
+  const { user, logout } = useAuth(); 
   
-  // State for recent batches
   const [recentBatches, setRecentBatches] = useState<RecentBatchItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,149 +53,140 @@ const DashboardScreen: React.FC = () => {
     batchesCompleted: 0,
     pendingSync: 0
   });
-
-  // Animation for the quick action button
   const quickActionAnim = useState(new Animated.Value(1))[0];
 
-  // Initialize Salesforce service when dashboard loads
+  
   useEffect(() => {
     salesforceService.initSalesforceService();
   }, []);
   
-  // Fetch recent batches when the screen is focused
   useFocusEffect(
     useCallback(() => {
-      fetchRecentBatches();
-      fetchDailyStats();
-    }, [userId])
+      if (user?.id) {
+        const currentUserId = user.id;
+        fetchRecentBatches(currentUserId);
+        fetchDailyStats(currentUserId);
+      }
+    }, [user?.id])
   );
   
-  // Fetch recent batches from database
-  const fetchRecentBatches = async () => {
-    if (!userId) return;
-    
+  const fetchRecentBatches = async (userId: string) => {
     setIsLoading(true);
     try {
-      // Get recent batches from database service
-      const batches = await databaseService.getRecentBatches(userId, 10);
-      
-      // Transform to our UI format
-      const formattedBatches: RecentBatchItem[] = batches.map(batch => ({
-        id: batch.id,
-        orderNumber: batch.orderNumber || `Batch #${batch.id.substring(0, 6)}`,
-        createdAt: new Date(batch.createdAt).toLocaleString(),
-        photoCount: batch.photoCount || 0,
-        status: batch.syncStatus || 'complete'
-      }));
-      
+      const batches = await databaseService.getRecentBatches(userId, 10); // Assuming user.id is guaranteed here by the check above
+      const formattedBatches: RecentBatchItem[] = batches.map(batch => {
+        let uiStatus: RecentBatchItem['status'] = 'complete'; 
+        switch (batch.syncStatus) {
+          case 'InProgress': 
+          case 'pending':    
+            uiStatus = 'in_progress';
+            break;
+          case 'Completed':  
+            uiStatus = 'complete';
+            break;
+          case 'Exported':   
+            uiStatus = 'exported';
+            break;
+          case 'error':      
+            uiStatus = 'error';
+            break;
+          default:
+            if (typeof batch.syncStatus === 'string' && batch.syncStatus.toLowerCase() === 'error') {
+              uiStatus = 'error';
+            } else if (batch.syncStatus) { 
+              console.warn(`Unknown batch syncStatus: ${batch.syncStatus}`);
+              uiStatus = 'in_progress'; 
+            }
+            break;
+        }
+        return {
+          id: batch.id.toString(),
+          referenceId: batch.referenceId || batch.orderNumber || `Batch #${batch.id}`,
+          orderNumber: batch.orderNumber || 'N/A', 
+          createdAt: new Date(batch.createdAt).toLocaleDateString(),
+          photoCount: batch.photoCount || 0,
+          status: uiStatus,
+          type: batch.type || 'Unknown',
+        };
+      });
       setRecentBatches(formattedBatches);
-      logAnalyticsEvent('recent_batches_loaded', { userId, count: formattedBatches.length });
     } catch (error) {
-      console.error('Failed to fetch recent batches:', error);
+      console.error("Error fetching recent batches:", error);
+      Alert.alert("Error", "Could not load recent batches.");
     } finally {
       setIsLoading(false);
       setRefreshing(false);
     }
   };
-  
-  // Fetch daily statistics
-  const fetchDailyStats = async () => {
-    if (!userId) return;
-    
+
+  const fetchDailyStats = async (userId: string) => {
     try {
-      // Get today's stats
       const stats = await databaseService.getDailyStats(userId);
-      setDailyStats({
-        photosToday: stats.photosToday || 0,
-        batchesCompleted: stats.batchesCompleted || 0,
-        pendingSync: stats.pendingSync || 0
-      });
+      setDailyStats(prevStats => ({ ...prevStats, batchesCompleted: stats.batchesCompleted, pendingSync: stats.pendingSync }));
     } catch (error) {
-      console.error('Failed to fetch daily stats:', error);
+      console.error("Error fetching daily stats:", error);
     }
   };
 
-  // Handle pull-to-refresh
   const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    fetchRecentBatches();
-    fetchDailyStats();
-  }, []);
+    if (user?.id) {
+      const currentUserId = user.id;
+      setRefreshing(true);
+      fetchRecentBatches(currentUserId);
+      fetchDailyStats(currentUserId);
+      // Potentially re-fetch other data or re-init services if needed
+      salesforceService.initSalesforceService(); // Example: Re-init SF service
+      setRefreshing(false);
+    }
+  }, [user?.id]);
 
-  // Animate quick action button on press
-  const animateQuickAction = () => {
-    Animated.sequence([
-      Animated.timing(quickActionAnim, {
-        toValue: 0.8,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(quickActionAnim, {
-        toValue: 1,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-    ]).start();
+  const animateQuickAction = (toValue: number, callback?: () => void) => {
+    Animated.spring(quickActionAnim, {
+      toValue,
+      friction: 7,
+      tension: 100,
+      useNativeDriver: true,
+    }).start(() => callback && callback());
   };
 
   const handleNavigation = (mode: 'Single' | 'Batch' | 'Inventory') => {
-    if (!userId) {
-      Alert.alert("Error", "User ID not found. Please log in again.");
-      logout(); // Log out if userId is missing
+    logAnalyticsEvent('DashboardNavigation', { mode });
+    if (!user || !user.id) {
+      console.warn('User ID is null, cannot navigate from handleNavigation.');
+      animateQuickAction(1); // Reset animation if we bail early
       return;
     }
-    
-    // Log analytics event
-    logAnalyticsEvent('navigation_photo_capture', { userId, mode });
-    
-    navigation.navigate('PhotoCapture', { 
-      mode: mode, 
-      userId: userId, // Pass userId from context
+    animateQuickAction(0.8, () => {
+      navigation.navigate('PhotoCapture', { mode, userId: user?.id, quickCapture: false, orderNumber: undefined, inventoryId: undefined });
+      setTimeout(() => animateQuickAction(1), 100);
     });
   };
-  
-  // Quick capture action - optimized for frequent use
-  const handleQuickCapture = () => {
-    animateQuickAction();
-    if (!userId) {
-      Alert.alert("Error", "User ID not found. Please log in again.");
-      logout();
+
+  const handleQuickCapture = useCallback(() => {
+    logAnalyticsEvent('QuickCapturePressed');
+    if (!user || !user.id) {
+      console.warn('User ID is null, cannot navigate from handleQuickCapture.');
+      animateQuickAction(1); // Reset animation if we bail early
       return;
     }
-    
-    // Log analytics event
-    logAnalyticsEvent('quick_capture_initiated', { userId });
-    
-    // Navigate directly to photo capture in batch mode
-    navigation.navigate('PhotoCapture', {
-      mode: 'Batch',
-      userId: userId,
-      quickCapture: true // Flag for optimized UI in photo capture
+    animateQuickAction(0.8, () => {
+      navigation.navigate('PhotoCapture', { mode: 'Batch', userId: user?.id, quickCapture: true, orderNumber: undefined, inventoryId: undefined });
+      setTimeout(() => animateQuickAction(1), 100); 
     });
-  };
-  
-  // Continue existing batch
-  const handleContinueBatch = (batchId: string) => {
-    if (!userId) {
-      Alert.alert("Error", "User ID not found. Please log in again.");
-      logout();
-      return;
-    }
-    
-    // Log analytics event
-    logAnalyticsEvent('continue_batch', { userId, batchId });
-    
-    // Navigate to batch preview - convert string ID to number
-    navigation.navigate('BatchPreview', { batchId: parseInt(batchId, 10) });
-  };
+  }, [navigation, quickActionAnim]);
+
+  const handleContinueBatch = useCallback((batchId: string) => {
+    logAnalyticsEvent('ContinueBatch', { batchId });
+    const batch = recentBatches.find(b => b.id === batchId);
+    navigation.navigate('PhotoCapture', { batchId: parseInt(batchId, 10) });
+  }, [navigation, recentBatches]);
 
   const handleDebugNavigation = () => {
     navigation.navigate('Debug');
   };
 
-  // Memoize the stats card component for better performance
-  const StatsCard = useMemo(() => (
-    <View style={styles.statsCard}>
+  const renderStatsCard = () => (
+    <View style={styles.statsCardContainer}> 
       <Text style={styles.statsTitle}>Today's Activity</Text>
       <View style={styles.statsRow}>
         <View style={styles.statItem}>
@@ -212,48 +205,36 @@ const DashboardScreen: React.FC = () => {
         </View>
       </View>
     </View>
-  ), [dailyStats]);
-  
-  // Memoize the sync status panel to avoid unnecessary re-renders
-  const SyncStatusSection = useMemo(() => (
-    <View style={styles.syncStatusContainer}>
-      <SyncStatusPanel />
-    </View>
-  ), []);
+  );
 
-  // Render a recent batch item
   const renderBatchItem = ({ item }: { item: RecentBatchItem }) => {
-    // Status indicator color
-    const statusColor = 
-      item.status === 'complete' ? COLORS.success :
-      item.status === 'syncing' ? COLORS.primary :
-      COLORS.warning;
-    
+    const statusColor = item.status === 'complete' ? COLORS.success 
+                      : item.status === 'in_progress' ? COLORS.warning 
+                      : item.status === 'error' ? COLORS.error 
+                      : item.status === 'exported' ? COLORS.info
+                      : COLORS.textLight;
     return (
-      <TouchableOpacity 
-        style={styles.batchItem} 
-        onPress={() => handleContinueBatch(item.id)}
-        activeOpacity={0.7}
-      >
+      <TouchableOpacity style={styles.batchItem} onPress={() => navigation.navigate('BatchPreview', { batchId: parseInt(item.id, 10), identifier: item.referenceId })}>
         <View style={styles.batchItemContent}>
           <View style={styles.batchItemHeader}>
-            <Text style={styles.batchOrderNumber}>{item.orderNumber}</Text>
+            <Text style={styles.batchOrderNumber}>{item.orderNumber || item.referenceId}</Text>
             <View style={[styles.statusIndicator, { backgroundColor: statusColor }]} />
           </View>
-          
           <View style={styles.batchItemDetails}>
+            <View style={styles.batchDetailItem}>
+              <Ionicons name="document-text-outline" size={20} color={COLORS.textLight} />
+              <Text style={styles.batchDetailText}>{item.type === 'Order' ? 'Order: ' : 'ID: '}{item.orderNumber || item.referenceId}</Text>
+            </View>
             <View style={styles.batchDetailItem}>
               <Ionicons name="time-outline" size={14} color={COLORS.textLight} />
               <Text style={styles.batchDetailText}>{item.createdAt}</Text>
             </View>
-            
             <View style={styles.batchDetailItem}>
               <Ionicons name="images-outline" size={14} color={COLORS.textLight} />
-              <Text style={styles.batchDetailText}>{item.photoCount} photos</Text>
+              <Text style={styles.batchDetailText}>{`${item.photoCount} photos`}</Text>
             </View>
           </View>
         </View>
-        
         <View style={styles.batchItemAction}>
           <Ionicons name="chevron-forward" size={20} color={COLORS.primary} />
         </View>
@@ -261,163 +242,151 @@ const DashboardScreen: React.FC = () => {
     );
   };
 
+  const Fab = useMemo(() => (
+    <Animated.View style={[styles.fabContainer, { transform: [{ scale: quickActionAnim }] }]}>
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => {
+          animateQuickAction(0.9, () => {
+            handleNavigation('Single'); 
+            animateQuickAction(1);
+          });
+        }}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="camera-outline" size={28} color={COLORS.white} />
+      </TouchableOpacity>
+    </Animated.View>
+  ), [quickActionAnim, handleNavigation, animateQuickAction]);
+
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Main Content */}
-      <FlatList
-        data={recentBatches}
-        renderItem={renderBatchItem}
-        keyExtractor={(item) => item.id}
-        ListHeaderComponent={
-          <>
-            {/* Sync Status Panel */}
-            <SyncStatusPanel />
-            
-            {/* Header */}
-            <View style={styles.headerContainer}>
-              <View>
-                <Text style={styles.welcomeText}>Welcome,</Text>
-                <Text style={styles.title}>{userId || 'User'}</Text>
+    <Fragment>
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.statusBarContainer}>
+          <NetworkStatusIndicator />
+        </View>
+
+        <FlatList
+          data={recentBatches}
+          renderItem={renderBatchItem}
+          keyExtractor={(item) => item.id}
+          ListHeaderComponent={
+            <>
+              <View style={styles.dashboardHeader}>
+                <View style={styles.headerWelcomeSection}>
+                  <Text style={styles.headerWelcomeText}>Hello,</Text>
+                  <Text style={styles.headerUserName}>Welcome back, {user?.email || user?.id || 'User'}!</Text>
+                </View>
+              </View> 
+
+              {/* Integrated Sync Status Section */}
+              <View style={styles.syncStatusSection}>
+                <SyncStatusPanel mode="full" />
               </View>
-              <NetworkStatusIndicator 
-                showLabel={true}
-                size="medium"
-                style={styles.networkIndicator}
-              />
-            </View>
-            
-            {/* Stats Card */}
-            {StatsCard}
-            
-            {/* Quick Action Buttons */}
-            <View style={styles.buttonContainer}>
-              <CustomButton 
-                title="Capture Single Part Photo" 
-                onPress={() => handleNavigation('Single')} 
-                variant="primary"
-                icon={<Ionicons name="camera-outline" size={20} color={COLORS.white} />} 
-              />
-              <View style={{ height: SPACING.medium }} /> 
-              <CustomButton 
-                title="Capture Batch for Order" 
-                onPress={() => handleNavigation('Batch')} 
-                variant="secondary"
-                icon={<Ionicons name="layers-outline" size={20} color={COLORS.white} />} 
-              />
-              <View style={{ height: SPACING.medium }} /> 
-              <CustomButton 
-                title="Random Inventory Check" 
-                onPress={() => handleNavigation('Inventory')} 
-                variant="secondary"
-                icon={<Ionicons name="cube-outline" size={20} color={COLORS.white} />} 
-              />
-            </View>
-            
-            {/* Recent Batches Header */}
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Recent Batches</Text>
-              {isLoading && <ActivityIndicator size="small" color={COLORS.primary} />}
-            </View>
-            
-            {/* Empty state for no batches */}
-            {!isLoading && recentBatches.length === 0 && (
-              <View style={styles.emptyStateContainer}>
-                <Ionicons name="images-outline" size={48} color={COLORS.textLight} />
-                <Text style={styles.emptyStateText}>No recent batches</Text>
-                <Text style={styles.emptyStateSubtext}>Start capturing photos to create a batch</Text>
+
+              {renderStatsCard()} 
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Recent Batches</Text>
               </View>
-            )}
-          </>
-        }
-        ListFooterComponent={
-          <>
-            {/* Debug Button */}
-            <TouchableOpacity style={styles.debugButton} onPress={handleDebugNavigation}>
-              <Ionicons name="bug-outline" size={16} color={COLORS.textLight} />
-              <Text style={styles.debugButtonText}>View Debug Logs</Text>
-            </TouchableOpacity>
-            
-            {/* Logout Button */}
-            <TouchableOpacity style={styles.logoutButton} onPress={logout}>
-              <Ionicons name="log-out-outline" size={24} color={COLORS.white} />
-              <Text style={styles.logoutButtonText}>Logout</Text>
-            </TouchableOpacity>
-            
-            {/* Extra padding at bottom */}
-            <View style={{ height: 100 }} />
-          </>
-        }
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={[COLORS.primary]}
-            tintColor={COLORS.primary}
-          />
-        }
-        contentContainerStyle={styles.scrollViewContent}
-      />
-    </SafeAreaView>
+            </>
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyStateContainer}>
+              <Ionicons name="file-tray-stacked-outline" size={64} color={COLORS.textLight} />
+              <Text style={styles.emptyStateText}>No Recent Batches</Text>
+              <Text style={styles.emptyStateSubtext}>Start a new batch or pull down to refresh.</Text>
+            </View>
+          }
+          ListFooterComponent={
+            <>
+              <TouchableOpacity style={styles.debugButton} onPress={handleDebugNavigation}>
+                <Ionicons name="bug-outline" size={16} color={COLORS.textLight} />
+                <Text style={styles.debugButtonText}>View Debug Logs</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.logoutButton} onPress={logout}>
+                <Ionicons name="log-out-outline" size={24} color={COLORS.white} />
+                <Text style={styles.logoutButtonText}>Logout</Text>
+              </TouchableOpacity>
+              <View style={{ height: 100 }} />
+            </>
+          }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[COLORS.primary]}
+              tintColor={COLORS.primary}
+            />
+          }
+        />
+        {Fab}
+      </SafeAreaView>
+
+    </Fragment>
   );
 };
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.background, 
+  },
+  statusBarContainer: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.medium,
+    paddingTop: SPACING.small, 
+    paddingBottom: SPACING.tiny,
+    backgroundColor: COLORS.background, 
+  },
+  headerNetworkIndicator: {},
+  headerSyncStatus: {},
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  syncStatusContainer: {
-    marginHorizontal: SPACING.large,
-    marginTop: SPACING.medium,
-    marginBottom: SPACING.small,
-  },
-  scrollViewContent: {
-    padding: SPACING.large,
-    paddingBottom: 100, // Extra padding for FAB
-  },
-  
-  // Header section
-  headerContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: SPACING.large,
-    paddingVertical: SPACING.medium,
-    backgroundColor: COLORS.white,
-    ...SHADOWS.small,
-  },
-  welcomeText: {
-    fontSize: FONTS.small,
-    color: COLORS.textLight,
-  },
-  title: {
-    fontSize: FONTS.xlarge,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
-  networkIndicator: {
-    marginLeft: SPACING.medium,
+  contentContainer: { 
+    paddingBottom: SPACING.large, 
   },
   userIdText: {
     fontSize: FONTS.medium,
     color: COLORS.textLight, 
     marginBottom: SPACING.medium,
   },
-  
-  // Stats card
-  statsCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: BORDER_RADIUS.medium,
-    padding: SPACING.medium,
-    marginHorizontal: SPACING.large,
+  dashboardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.medium, 
+    paddingVertical: SPACING.medium,   
+    marginBottom: SPACING.medium, 
+  },
+  headerWelcomeSection: {
+    flex: 1, 
+  },
+  headerWelcomeText: {
+    fontSize: FONTS.large,
+    color: COLORS.textLight,
+  },
+  headerUserName: {
+    fontSize: FONTS.xlarge,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.text,
+    marginTop: SPACING.tiny,
+  },
+  headerStatusSection: {},
+  statsCardContainer: {
+    ...CARD_STYLES.elevated,
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginHorizontal: SPACING.medium, 
     marginTop: SPACING.medium,
-    ...SHADOWS.small,
   },
   statsTitle: {
     fontSize: FONTS.medium,
-    fontWeight: 'bold',
+    fontWeight: FONTS.semiBold,
     color: COLORS.text,
-    marginBottom: SPACING.small,
   },
   statsRow: {
     flexDirection: 'row',
@@ -426,11 +395,11 @@ const styles = StyleSheet.create({
   },
   statItem: {
     alignItems: 'center',
-    flex: 1,
+    flex: 1, 
   },
   statValue: {
-    fontSize: FONTS.xlarge,
-    fontWeight: 'bold',
+    fontSize: FONTS.large, 
+    fontWeight: FONTS.bold,
     color: COLORS.primary,
   },
   statLabel: {
@@ -440,45 +409,43 @@ const styles = StyleSheet.create({
   },
   statDivider: {
     width: 1,
-    height: 40,
+    height: '60%', 
     backgroundColor: COLORS.border,
+    alignSelf: 'center',
   },
-  
-  // Button container
-  buttonContainer: {
-    marginHorizontal: SPACING.large,
-    marginTop: SPACING.large,
-    marginBottom: SPACING.large, 
-    backgroundColor: COLORS.white, 
+
+  dashboardCard: {
+    ...CARD_STYLES.elevated,
+    marginVertical: SPACING.small,
+    marginHorizontal: SPACING.medium,
+  },
+  syncStatusSection: {
+    marginHorizontal: SPACING.medium,
+    marginTop: SPACING.medium,
+    marginBottom: SPACING.small,
+    padding: SPACING.medium,
     borderRadius: BORDER_RADIUS.medium,
-    padding: SPACING.large,
-    ...SHADOWS.medium,
+    backgroundColor: COLORS.card,
+    ...SHADOWS.small,
   },
-  
-  // Section headers
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: SPACING.large,
+    paddingHorizontal: SPACING.medium, 
     marginTop: SPACING.large,
     marginBottom: SPACING.medium,
   },
   sectionTitle: {
     fontSize: FONTS.large,
-    fontWeight: 'bold',
+    fontWeight: FONTS.bold,
     color: COLORS.text,
   },
-  
-  // Batch items
   batchItem: {
+    ...CARD_STYLES.elevated,
     flexDirection: 'row',
-    backgroundColor: COLORS.white,
-    borderRadius: BORDER_RADIUS.medium,
-    padding: SPACING.medium,
-    marginHorizontal: SPACING.large,
-    marginBottom: SPACING.medium,
-    ...SHADOWS.small,
+    marginHorizontal: SPACING.medium, 
+    marginBottom: SPACING.small,
   },
   batchItemContent: {
     flex: 1,
@@ -491,13 +458,13 @@ const styles = StyleSheet.create({
   },
   batchOrderNumber: {
     fontSize: FONTS.medium,
-    fontWeight: 'bold',
+    fontWeight: FONTS.bold,
     color: COLORS.text,
   },
   statusIndicator: {
     width: 10,
     height: 10,
-    borderRadius: 5,
+    borderRadius: 10 / 2, // Ensures a perfect circle
   },
   batchItemDetails: {
     flexDirection: 'row',
@@ -516,21 +483,20 @@ const styles = StyleSheet.create({
   },
   batchItemAction: {
     justifyContent: 'center',
+    alignItems: 'center', 
+    paddingLeft: SPACING.small, 
   },
-  
-  // Empty state
   emptyStateContainer: {
+    ...CARD_STYLES.elevated,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: SPACING.xlarge,
-    backgroundColor: COLORS.white,
-    borderRadius: BORDER_RADIUS.medium,
-    marginHorizontal: SPACING.large,
-    ...SHADOWS.small,
+    marginHorizontal: SPACING.medium, 
+    marginVertical: SPACING.small,
+    marginTop: SPACING.xlarge, 
   },
   emptyStateText: {
     fontSize: FONTS.large,
-    fontWeight: 'bold',
+    fontWeight: FONTS.bold,
     color: COLORS.textLight,
     marginTop: SPACING.medium,
   },
@@ -540,8 +506,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: SPACING.small,
   },
-  
-  // Debug & Logout buttons
   debugButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -556,16 +520,16 @@ const styles = StyleSheet.create({
     marginLeft: SPACING.tiny,
   },
   logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.error, 
-    paddingVertical: SPACING.medium,
-    paddingHorizontal: SPACING.large,
-    borderRadius: BORDER_RADIUS.medium,
+    ...BUTTON_STYLES.danger,
+    flexDirection: 'row', // Keep for icon alignment
+    alignItems: 'center', // Keep for icon alignment
+    justifyContent: 'center', // Keep for icon alignment
+    paddingVertical: SPACING.medium, // BUTTON_STYLES might not have padding
+    paddingHorizontal: SPACING.large, // BUTTON_STYLES might not have padding
+    borderRadius: BORDER_RADIUS.medium, // BUTTON_STYLES might not have borderRadius or a different one
     marginTop: SPACING.medium,
     alignSelf: 'center', 
-    ...SHADOWS.small, 
+    ...SHADOWS.small, // BUTTON_STYLES might not include shadow
   },
   logoutButtonText: {
     color: COLORS.white,
@@ -573,8 +537,6 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.semiBold,
     marginLeft: SPACING.small,
   },
-  
-  // Floating Action Button
   fabContainer: {
     position: 'absolute',
     bottom: SPACING.xlarge,
@@ -588,6 +550,27 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.overlay, 
+  },
+  modalContent: {
+    width: '90%',
+    backgroundColor: COLORS.background, 
+    borderRadius: BORDER_RADIUS.large,
+    padding: SPACING.medium,
+    ...SHADOWS.large,
+    position: 'relative', 
+  },
+  closeModalButton: {
+    position: 'absolute',
+    top: SPACING.small,
+    right: SPACING.small,
+    padding: SPACING.tiny, 
+    zIndex: 10, 
   },
 });
 
