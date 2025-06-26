@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   TextInput,
 } from 'react-native';
+import { TextInput as PaperTextInput, Button as PaperButton, Card as PaperCard } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import CustomInput from '../components/CustomInput';
@@ -26,6 +27,7 @@ type LoginScreenNavigationProp = StackNavigationProp<AuthStackParamList, 'Login'
 const LoginScreen: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const { login, isLoading, authError } = useAuth(); // Added authError for consistency, though not used in this snippet directly for navigation
   const navigation = useNavigation<LoginScreenNavigationProp>();
 
@@ -47,46 +49,53 @@ const LoginScreen: React.FC = () => {
           <Logo width="80%" height={150} />
           <Text style={styles.title}>Quality Control PIC</Text>
         </View>
-        <View style={styles.formContainer}>
-          <Text style={styles.label}>Username</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter your username"
-            placeholderTextColor={COLORS.grey600}
-            value={username}
-            onChangeText={setUsername}
-            autoCorrect={false}
-            keyboardType="default"
-            editable={!isLoading}
-          />
-          <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter your password"
-            placeholderTextColor={COLORS.grey600}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            editable={!isLoading}
-          />
-          <TouchableOpacity
-            style={styles.button}
-            onPress={handleLogin}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator size="small" color={COLORS.white} />
-            ) : (
-              <Text style={styles.buttonText}>Login</Text>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.signUpLinkContainer} onPress={() => navigation.navigate('SignUp')} disabled={isLoading}>
-            <Text style={styles.signUpLinkText}>
-              Don't have an account? <Text style={styles.signUpLinkTextBold}>Sign Up</Text>
-            </Text>
-          </TouchableOpacity>
-          {authError && <Text style={styles.errorText}>{authError.message || 'An unexpected error occurred.'}</Text>}
-        </View>
+        <PaperCard style={styles.formCard}>
+          <PaperCard.Content>
+            <PaperTextInput
+              mode="outlined"
+              label="Username"
+              placeholder="Enter your username"
+              value={username}
+              onChangeText={setUsername}
+              autoCorrect={false}
+              keyboardType="default"
+              disabled={isLoading}
+              left={<PaperTextInput.Icon icon="account-outline" />}
+              style={styles.paperInput}
+            />
+            <PaperTextInput
+              mode="outlined"
+              label="Password"
+              placeholder="Enter your password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!isPasswordVisible}
+              disabled={isLoading}
+              left={<PaperTextInput.Icon icon="lock-outline" />}
+              right={<PaperTextInput.Icon
+                icon={isPasswordVisible ? "eye-off" : "eye"}
+                onPress={() => setIsPasswordVisible(!isPasswordVisible)}
+              />}
+              style={styles.paperInput}
+            />
+            <PaperButton
+              mode="contained"
+              onPress={handleLogin}
+              disabled={isLoading}
+              loading={isLoading}
+              style={styles.paperButton}
+              labelStyle={styles.paperButtonLabel}
+            >
+              Login
+            </PaperButton>
+            <TouchableOpacity style={styles.signUpLinkContainer} onPress={() => navigation.navigate('SignUp')} disabled={isLoading}>
+              <Text style={styles.signUpLinkText}>
+                Don't have an account? <Text style={styles.signUpLinkTextBold}>Sign Up</Text>
+              </Text>
+            </TouchableOpacity>
+            {authError && <Text style={styles.errorText}>{authError.message || 'An unexpected error occurred.'}</Text>}
+          </PaperCard.Content>
+        </PaperCard>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -105,13 +114,14 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: SPACING.xlarge,
+    marginBottom: SPACING.xlarge * 1.5, // Increased spacing between logo and form
   },
   title: {
-    fontSize: FONTS.xlarge,
-    fontWeight: FONTS.bold,
+    fontSize: 28, // Increased from FONTS.xlarge
+    fontWeight: '800', // Increased from FONTS.bold
     color: COLORS.primary,
     marginTop: SPACING.medium,
+    textAlign: 'center',
   },
   formContainer: {
     width: '100%',
@@ -120,6 +130,12 @@ const styles = StyleSheet.create({
     padding: SPACING.large,
     borderRadius: BORDER_RADIUS.medium,
     ...SHADOWS.medium,
+  },
+  formCard: {
+    width: '100%',
+    maxWidth: 400,
+    elevation: 8,
+    borderRadius: BORDER_RADIUS.medium,
   },
   label: {
     fontSize: FONTS.medium,
@@ -137,6 +153,16 @@ const styles = StyleSheet.create({
     fontSize: FONTS.medium,
     color: COLORS.text,
     marginBottom: SPACING.medium,
+  },
+  paperInput: {
+    marginBottom: SPACING.medium,
+  },
+  paperButton: {
+    marginTop: SPACING.small,
+  },
+  paperButtonLabel: {
+    fontSize: FONTS.large,
+    fontWeight: FONTS.bold,
   },
   button: {
     backgroundColor: COLORS.primary,
