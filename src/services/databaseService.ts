@@ -77,6 +77,61 @@ const initializeAdditionalServices = async (): Promise<void> => {
     const { initializeBatchManagementTables } = await import('./batchManagementService');
     await initializeBatchManagementTables();
     
+    // Initialize SharePoint service
+    try {
+      const { initializeSharePointStorage } = await import('./sharepointService');
+      await initializeSharePointStorage();
+      console.log('[databaseService] SharePoint storage initialized successfully');
+    } catch (sharepointError) {
+      console.error('[databaseService] SharePoint initialization failed:', sharepointError);
+      // Try to create the table manually as fallback
+      try {
+        const db = await openDatabase();
+        await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS sharepoint_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT DEFAULT 'disconnected',
+            lastSync TEXT,
+            enabled INTEGER DEFAULT 0,
+            tenantId TEXT,
+            clientId TEXT,
+            clientSecret TEXT,
+            siteUrl TEXT,
+            libraryName TEXT,
+            redirectUri TEXT,
+            accessToken TEXT,
+            refreshToken TEXT,
+            tokenExpiry TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE TABLE IF NOT EXISTS sharepoint_uploads (
+            id TEXT PRIMARY KEY,
+            connectionId TEXT NOT NULL,
+            localFilePath TEXT NOT NULL,
+            remoteFileUrl TEXT,
+            itemId TEXT,
+            uploadStatus TEXT DEFAULT 'pending',
+            batchId TEXT,
+            photoId TEXT,
+            uploadedAt TEXT,
+            error TEXT,
+            retryCount INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (connectionId) REFERENCES sharepoint_connections(id)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_sharepoint_uploads_status ON sharepoint_uploads(uploadStatus);
+          CREATE INDEX IF NOT EXISTS idx_sharepoint_uploads_batch ON sharepoint_uploads(batchId);
+        `);
+        console.log('[databaseService] SharePoint tables created via fallback method');
+      } catch (fallbackError) {
+        console.error('[databaseService] SharePoint fallback creation also failed:', fallbackError);
+      }
+    }
+    
     console.log('[databaseService] Additional services initialized successfully');
   } catch (error) {
     console.error('[databaseService] Error initializing additional services:', error);

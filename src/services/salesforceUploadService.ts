@@ -4,7 +4,8 @@
  */
 
 import { salesforceOAuthService } from './salesforceOAuthService';
-import companyIntegrationsService, { SalesforceConfig } from './companyIntegrationsService';
+import companyIntegrationsService from './companyIntegrationsService';
+import { salesforceObjectMappingService, ParsedDocumentId } from './salesforceObjectMappingService';
 
 export interface UploadResult {
   success: boolean;
@@ -202,36 +203,66 @@ class SalesforceUploadService {
     try {
       console.log(`[SalesforceUpload] Starting upload flow for scanned ID: ${scannedId}`);
 
-      // Step 1: Parse scanned ID
-      const idInfo = this.parseScannedId(scannedId);
-      console.log(`[SalesforceUpload] Parsed ID - Prefix: ${idInfo.prefix}, Number: ${idInfo.number}`);
+      // Step 1: Parse scanned ID and find object mapping
+      const parsedId = await salesforceObjectMappingService.parseDocumentIdWithMapping(companyId, scannedId);
+      if (!parsedId.mapping) {
+        return {
+          success: false,
+          message: `No object mapping found for prefix '${parsedId.prefix}'. Please configure object mappings in settings.`,
+          details: {
+            scannedId,
+            prefix: parsedId.prefix,
+            availableMappings: await salesforceObjectMappingService.getCompanyObjectMappings(companyId)
+          }
+        };
+      }
 
-      // Step 2: Get object information for prefix
-      const objectInfo = await this.getObjectInfoForPrefix(companyId, idInfo.prefix);
-      console.log(`[SalesforceUpload] Object mapping - Object: ${objectInfo.objectName}, Field: ${objectInfo.nameField}`);
+      console.log(`[SalesforceUpload] Found mapping: ${parsedId.prefix} -> ${parsedId.mapping.salesforce_object}`);
+
+      // Step 2: Get Salesforce integration and tokens
+      const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
+      if (!integration || integration.status !== 'active') {
+        return {
+          success: false,
+          message: 'Salesforce integration is not active for this company',
+          details: { integrationStatus: integration?.status || 'not_found' }
+        };
+      }
+
+      const tokens = await salesforceOAuthService.getStoredTokens(companyId);
+      if (!tokens || !tokens.access_token) {
+        return {
+          success: false,
+          message: 'No valid Salesforce OAuth tokens found. Please re-authenticate.',
+          details: { tokenStatus: 'missing_or_invalid' }
+        };
+      }
 
       // Step 3: Search for record by name
       const record = await this.findRecordByName(
         companyId,
-        objectInfo.objectName,
-        objectInfo.nameField,
-        scannedId
+        parsedId.mapping.salesforce_object,
+        parsedId.mapping.name_field,
+        parsedId.fullId
       );
 
       if (!record) {
         return {
           success: false,
-          message: `No ${objectInfo.objectName} record found with name: ${scannedId}`,
+          message: `No ${parsedId.mapping.salesforce_object} record found with ${parsedId.mapping.name_field} = '${parsedId.fullId}'`,
           details: {
             scannedId,
-            objectName: objectInfo.objectName,
-            searchField: objectInfo.nameField
+            objectName: parsedId.mapping.salesforce_object,
+            searchField: parsedId.mapping.name_field,
+            searchValue: parsedId.fullId
           }
         };
       }
 
-      // Step 4: Upload PDF to the found record
-      const fileName = `${scannedId} - Pics.pdf`;
+      console.log(`[SalesforceUpload] Found record: ${record.id}`);
+
+      // Step 4: Upload PDF as attachment
+      const fileName = `${parsedId.fullId} - Pics.pdf`;
       const uploadResult = await this.uploadPdfToRecord(
         companyId,
         record.id,
@@ -241,13 +272,12 @@ class SalesforceUploadService {
 
       return {
         success: true,
-        message: `PDF successfully uploaded to ${objectInfo.objectName} record: ${record.name}`,
+        message: `PDF successfully uploaded to ${parsedId.mapping.salesforce_object} record ${parsedId.fullId}`,
         recordId: record.id,
         attachmentId: uploadResult.attachmentId,
         details: {
           scannedId,
-          recordName: record.name,
-          objectName: objectInfo.objectName,
+          objectName: parsedId.mapping.salesforce_object,
           fileName
         }
       };

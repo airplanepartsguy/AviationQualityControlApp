@@ -333,6 +333,9 @@ export const uploadPhoto = async (
     
     // Read the file as base64
     const response = await fetch(photoUri);
+    if (!response || !response.ok) {
+      throw new Error(`Failed to fetch photo from URI: ${photoUri}. Status: ${response?.status || 'No response'}`);
+    }
     const blob = await response.blob();
     
     const { data, error } = await supabase.storage
@@ -366,6 +369,9 @@ export const uploadPhotoLegacy = async (photoUri: string, fileName: string, buck
     console.log(`[SupabaseService] Legacy upload: ${fileName} to ${bucket}...`);
     
     const response = await fetch(photoUri);
+    if (!response || !response.ok) {
+      throw new Error(`Failed to fetch photo from URI: ${photoUri}. Status: ${response?.status || 'No response'}`);
+    }
     const blob = await response.blob();
     
     const { data, error } = await supabase.storage

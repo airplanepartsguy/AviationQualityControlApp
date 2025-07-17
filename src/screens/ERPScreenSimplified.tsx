@@ -48,7 +48,7 @@ interface ERPIntegrationStatus {
   };
 }
 
-const ERPScreen: React.FC = () => {
+const ERPScreenSimplified: React.FC = () => {
   const navigation = useNavigation();
   const { user } = useAuth();
   const { currentCompany } = useCompany();
@@ -60,12 +60,12 @@ const ERPScreen: React.FC = () => {
 
   const loadERPData = async () => {
     if (!currentCompany?.id) {
-      console.log('[ERPScreen] No company selected');
+      console.log('[ERPScreenSimplified] No company selected');
       return;
     }
 
     try {
-      console.log('[ERPScreen] Loading ERP data for company:', currentCompany.id);
+      console.log('[ERPScreenSimplified] Loading ERP data for company:', currentCompany.id);
       
       // Load ERP permissions
       const permissions = await getAvailableERPIntegrations(currentCompany.id);
@@ -102,14 +102,13 @@ const ERPScreen: React.FC = () => {
       };
       
       setIntegrationStatus(status);
-      console.log('[ERPScreen] ERP data loaded successfully');
+      console.log('[ERPScreenSimplified] ERP data loaded successfully');
       
     } catch (error) {
-      console.error('[ERPScreen] Error loading ERP data:', error);
-      Alert.alert('Error', 'Failed to load ERP integration data');
+      console.error('[ERPScreenSimplified] Error loading ERP data:', error);
+      Alert.alert('Error', 'Failed to load ERP integration data. Please try again.');
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   };
 
@@ -117,9 +116,10 @@ const ERPScreen: React.FC = () => {
     loadERPData();
   }, [currentCompany?.id]);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setRefreshing(true);
-    loadERPData();
+    await loadERPData();
+    setRefreshing(false);
   };
 
   const handleConfigureIntegration = (integrationType: string) => {
@@ -128,10 +128,10 @@ const ERPScreen: React.FC = () => {
         navigation.navigate('SalesforceConfig' as never);
         break;
       case 'sharepoint':
-        Alert.alert('SharePoint', 'SharePoint configuration coming soon');
+        Alert.alert('Coming Soon', 'SharePoint integration is coming soon!');
         break;
       default:
-        Alert.alert('Coming Soon', `${integrationType} integration is not yet available`);
+        Alert.alert('Coming Soon', `${integrationType} integration is coming soon!`);
     }
   };
 
@@ -159,54 +159,44 @@ const ERPScreen: React.FC = () => {
     description: string,
     icon: string
   ) => {
-    if (!integrationStatus || !erpPermissions) return null;
-    
-    const integration = integrationStatus[type];
-    const permission = erpPermissions[type];
-    
-    if (!integration.available) {
-      return (
-        <View key={type} style={[styles.card, styles.disabledCard]}>
-          <View style={styles.cardHeader}>
-            <View style={styles.cardIcon}>
-              <Ionicons name={icon as any} size={24} color={COLORS.textLight} />
-            </View>
-            <View style={styles.cardInfo}>
-              <Text style={[styles.cardTitle, styles.disabledText]}>{title}</Text>
-              <Text style={[styles.cardDescription, styles.disabledText]}>Not available in your license</Text>
-            </View>
-            <Ionicons name="lock-closed" size={20} color={COLORS.textLight} />
-          </View>
-        </View>
-      );
-    }
+    const integration = integrationStatus?.[type];
+    if (!integration?.available) return null;
 
     return (
       <TouchableOpacity
         key={type}
-        style={[styles.card, integration.isPrimary && styles.primaryCard]}
+        style={[
+          styles.card,
+          integration.isPrimary && styles.primaryCard,
+          !integration.available && styles.disabledCard
+        ]}
         onPress={() => handleConfigureIntegration(type)}
+        disabled={!integration.available}
       >
         <View style={styles.cardHeader}>
           <View style={styles.cardIcon}>
-            <Ionicons name={icon as any} size={24} color={COLORS.primary} />
+            <Ionicons name={icon as any} size={20} color={COLORS.primary} />
           </View>
           <View style={styles.cardInfo}>
             <View style={styles.titleRow}>
-              <Text style={styles.cardTitle}>{title}</Text>
+              <Text style={[styles.cardTitle, !integration.available && styles.disabledText]}>
+                {title}
+              </Text>
               {integration.isPrimary && (
                 <View style={styles.primaryBadge}>
                   <Text style={styles.primaryBadgeText}>PRIMARY</Text>
                 </View>
               )}
             </View>
-            <Text style={styles.cardDescription}>{description}</Text>
+            <Text style={[styles.cardDescription, !integration.available && styles.disabledText]}>
+              {description}
+            </Text>
           </View>
           <View style={styles.statusContainer}>
-            <Ionicons 
-              name={getStatusIcon(integration.status)} 
-              size={20} 
-              color={getStatusColor(integration.status)} 
+            <Ionicons
+              name={getStatusIcon(integration.status)}
+              size={24}
+              color={getStatusColor(integration.status)}
             />
           </View>
         </View>
@@ -215,7 +205,9 @@ const ERPScreen: React.FC = () => {
           <Text style={[styles.statusText, { color: getStatusColor(integration.status) }]}>
             {integration.connected ? 'Connected' : 'Not Connected'}
           </Text>
-          <Text style={styles.configureText}>Tap to configure</Text>
+          <Text style={styles.configureText}>
+            Tap to configure
+          </Text>
         </View>
       </TouchableOpacity>
     );
@@ -233,15 +225,17 @@ const ERPScreen: React.FC = () => {
   if (!currentCompany) {
     return (
       <View style={styles.errorContainer}>
-        <Ionicons name="business-outline" size={48} color={COLORS.textLight} />
+        <Ionicons name="business-outline" size={64} color={COLORS.textLight} />
         <Text style={styles.errorTitle}>No Company Selected</Text>
-        <Text style={styles.errorText}>Please select a company to view ERP integrations</Text>
+        <Text style={styles.errorText}>
+          Please select a company to view ERP integrations.
+        </Text>
       </View>
     );
   }
 
   return (
-    <ScrollView 
+    <ScrollView
       style={styles.container}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
@@ -250,7 +244,7 @@ const ERPScreen: React.FC = () => {
       <View style={styles.header}>
         <Text style={styles.title}>ERP Integrations</Text>
         <Text style={styles.subtitle}>
-          Connect your quality control data with enterprise systems
+          Connect your enterprise systems for seamless data flow
         </Text>
       </View>
 
@@ -262,8 +256,8 @@ const ERPScreen: React.FC = () => {
       <View style={styles.integrationsContainer}>
         {renderIntegrationCard(
           'salesforce',
-          'Salesforce (AvSight)',
-          'Sync batches and photos with Salesforce CRM',
+          'Salesforce / AvSight',
+          'Sync with Salesforce CRM and AvSight',
           'cloud-outline'
         )}
         
@@ -453,4 +447,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default ERPScreen;
+export default ERPScreenSimplified;

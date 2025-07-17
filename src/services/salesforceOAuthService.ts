@@ -79,13 +79,10 @@ class SalesforceOAuthService {
         ? 'https://test.salesforce.com' 
         : 'https://login.salesforce.com';
       
-      // CRITICAL FIX: OAuth should always use login.salesforce.com (or test.salesforce.com for sandbox)
-      // NOT the instance URL (like https://yourcompany.my.salesforce.com) which causes file download issues
       console.log('[SalesforceOAuth] Using OAuth base URL:', baseUrl);
       console.log('[SalesforceOAuth] Instance URL (for API calls):', config.instanceUrl);
       
       // Generate PKCE challenge for security
-      // Generate a random code verifier (43-128 characters)
       const codeVerifier = this.generateCodeVerifier();
       const codeChallenge = await Crypto.digestStringAsync(
         Crypto.CryptoDigestAlgorithm.SHA256,
@@ -94,6 +91,27 @@ class SalesforceOAuthService {
       );
       // Remove padding and make URL-safe
       const urlSafeCodeChallenge = codeChallenge.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      
+      // Store PKCE code verifier in database for Edge Function to retrieve
+      try {
+        const { error: storeError } = await supabaseService.supabase
+          .from('oauth_state')
+          .upsert({
+            company_id: companyId,
+            integration_type: 'salesforce',
+            code_verifier: codeVerifier,
+            code_challenge: urlSafeCodeChallenge,
+            expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+          });
+        
+        if (storeError) {
+          throw storeError;
+        }
+        console.log('[SalesforceOAuth] PKCE code verifier stored in database');
+      } catch (storeError) {
+        console.error('[SalesforceOAuth] Failed to store PKCE code verifier:', storeError);
+        // Continue anyway - fallback to old method if needed
+      }
       
       const redirectUri = this.getRedirectUri();
       console.log('[SalesforceOAuth] Using redirect URI:', redirectUri);
@@ -115,44 +133,63 @@ class SalesforceOAuthService {
   }
 
   /**
-   * Retrieve OAuth callback data from Supabase
+   * Check if OAuth tokens are available (direct approach)
    */
-  async retrieveOAuthCallback(companyId: string): Promise<{ authCode?: string; error?: string; errorDescription?: string }> {
+  async checkOAuthTokens(companyId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const { data, error } = await supabaseService.supabase
+      console.log('[SalesforceOAuth] Checking OAuth tokens for company:', companyId);
+      
+      // First check if there are any successful OAuth callbacks
+      const { data: callbackData, error: callbackError } = await supabaseService.supabase
         .from('oauth_callbacks')
-        .select('auth_code, error, error_description')
+        .select('*')
         .eq('company_id', companyId)
+        .is('error', null)
         .eq('consumed', false)
-        .gt('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false })
         .limit(1)
         .single();
-
-      if (error) {
-        console.error('[SalesforceOAuth] Error retrieving callback:', error);
-        return {};
-      }
-
-      if (data) {
-        // Mark as consumed
+      
+      if (callbackData && !callbackError) {
+        console.log('[SalesforceOAuth] Found successful OAuth callback, checking for tokens...');
+        
+        // Mark callback as consumed
         await supabaseService.supabase
           .from('oauth_callbacks')
           .update({ consumed: true })
-          .eq('company_id', companyId)
-          .eq('auth_code', data.auth_code);
-
-        return {
-          authCode: data.auth_code,
-          error: data.error,
-          errorDescription: data.error_description
-        };
+          .eq('id', callbackData.id);
       }
-
-      return {};
+      
+      // Check if tokens are stored in company_integrations config
+      const { data: integration, error: integrationError } = await supabaseService.supabase
+        .from('company_integrations')
+        .select('config')
+        .eq('company_id', companyId)
+        .eq('integration_type', 'salesforce')
+        .single();
+      
+      if (integrationError || !integration) {
+        console.log('[SalesforceOAuth] No Salesforce integration found:', integrationError?.message);
+        return { success: false };
+      }
+      
+      const config = integration.config as any;
+      if (!config?.access_token) {
+        console.log('[SalesforceOAuth] No access token found in config');
+        return { success: false };
+      }
+      
+      // Check if token is expired
+      if (config.token_expires_at && new Date(config.token_expires_at) < new Date()) {
+        console.log('[SalesforceOAuth] OAuth tokens are expired');
+        return { success: false, error: 'tokens_expired' };
+      }
+      
+      console.log('[SalesforceOAuth] Valid OAuth tokens found in config');
+      return { success: true };
     } catch (error) {
-      console.error('[SalesforceOAuth] Error retrieving OAuth callback:', error);
-      return {};
+      console.error('[SalesforceOAuth] Error checking tokens:', error);
+      return { success: false, error: 'token_check_failed' };
     }
   }
 
@@ -167,29 +204,54 @@ class SalesforceOAuthService {
   ): Promise<SalesforceTokens> {
     try {
       console.log('[SalesforceOAuth] Completing OAuth flow for company:', companyId);
+      console.log('[SalesforceOAuth] Auth code length:', authCode?.length || 0);
+      console.log('[SalesforceOAuth] Code verifier length:', codeVerifier?.length || 0);
+      
+      // Validate required parameters
+      if (!authCode) {
+        throw new Error('Authorization code is required');
+      }
+      if (!codeVerifier) {
+        throw new Error('PKCE code verifier is required');
+      }
+      if (!config.clientId || !config.clientSecret) {
+        throw new Error('Client ID and Client Secret are required');
+      }
       
       const baseUrl = config.sandbox 
         ? 'https://test.salesforce.com' 
         : 'https://login.salesforce.com';
       
-      // CRITICAL FIX: OAuth should always use login.salesforce.com (or test.salesforce.com for sandbox)
-      // NOT the instance URL (like https://yourcompany.my.salesforce.com) which causes file download issues
       console.log('[SalesforceOAuth] Using OAuth base URL:', baseUrl);
       console.log('[SalesforceOAuth] Instance URL (for API calls):', config.instanceUrl);
       
       const tokenUrl = `${baseUrl}/services/oauth2/token`;
-      
       const redirectUri = this.getRedirectUri();
-    
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      redirect_uri: redirectUri,
-      code: authCode,
-      code_verifier: codeVerifier
-    });
-
+      
+      console.log('[SalesforceOAuth] Token URL:', tokenUrl);
+      console.log('[SalesforceOAuth] Redirect URI:', redirectUri);
+      
+      const requestBody = {
+        grant_type: 'authorization_code',
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        redirect_uri: redirectUri,
+        code: authCode,
+        code_verifier: codeVerifier
+      };
+      
+      console.log('[SalesforceOAuth] Request body params:', {
+        grant_type: requestBody.grant_type,
+        client_id: requestBody.client_id.substring(0, 10) + '...',
+        client_secret: requestBody.client_secret ? '[PRESENT]' : '[MISSING]',
+        redirect_uri: requestBody.redirect_uri,
+        code: requestBody.code.substring(0, 10) + '...',
+        code_verifier: requestBody.code_verifier.substring(0, 10) + '...'
+      });
+      
+      const body = new URLSearchParams(requestBody);
+      
+      console.log('[SalesforceOAuth] Making token exchange request...');
       const response = await fetch(tokenUrl, {
         method: 'POST',
         headers: {
@@ -198,25 +260,72 @@ class SalesforceOAuthService {
         },
         body: body.toString()
       });
+      
+      console.log('[SalesforceOAuth] Token exchange response status:', response.status);
+      console.log('[SalesforceOAuth] Token exchange response headers:', Object.fromEntries(response.headers.entries()));
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('[SalesforceOAuth] Token exchange failed:', errorText);
-        throw new Error(`OAuth token exchange failed: ${response.status}`);
+        console.error('[SalesforceOAuth] Token exchange failed with status:', response.status);
+        console.error('[SalesforceOAuth] Token exchange error response:', errorText);
+        
+        // Try to parse error as JSON for better error messages
+        let errorMessage = `OAuth token exchange failed: ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          if (errorJson.error_description) {
+            errorMessage += ` - ${errorJson.error_description}`;
+          } else if (errorJson.error) {
+            errorMessage += ` - ${errorJson.error}`;
+          }
+        } catch (parseError) {
+          errorMessage += ` - ${errorText}`;
+        }
+        
+        throw new Error(errorMessage);
       }
 
-      const tokens: SalesforceTokens = await response.json();
+      const responseText = await response.text();
+      console.log('[SalesforceOAuth] Token exchange response body:', responseText);
+      
+      let tokens: SalesforceTokens;
+      try {
+        tokens = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('[SalesforceOAuth] Failed to parse token response as JSON:', parseError);
+        throw new Error('Invalid JSON response from Salesforce token endpoint');
+      }
+      
+      // Validate token response
+      if (!tokens.access_token) {
+        console.error('[SalesforceOAuth] No access token in response:', tokens);
+        throw new Error('No access token received from Salesforce');
+      }
+      
+      console.log('[SalesforceOAuth] Successfully received tokens:', {
+        access_token: tokens.access_token ? '[PRESENT]' : '[MISSING]',
+        refresh_token: tokens.refresh_token ? '[PRESENT]' : '[MISSING]',
+        instance_url: tokens.instance_url,
+        token_type: tokens.token_type
+      });
       
       // Store tokens securely
+      console.log('[SalesforceOAuth] Storing tokens securely...');
       await this.storeTokens(companyId, tokens);
+      console.log('[SalesforceOAuth] Tokens stored successfully');
       
       // Update company integration record
+      console.log('[SalesforceOAuth] Updating company integration status...');
       await this.updateCompanyIntegration(companyId, tokens);
+      console.log('[SalesforceOAuth] Company integration status updated');
       
       console.log('[SalesforceOAuth] OAuth flow completed successfully');
       return tokens;
     } catch (error) {
       console.error('[SalesforceOAuth] Error completing OAuth flow:', error);
+      if (error instanceof Error) {
+        console.error('[SalesforceOAuth] Error stack:', error.stack);
+      }
       throw error;
     }
   }
@@ -283,6 +392,11 @@ class SalesforceOAuthService {
         client_secret: config.clientSecret,
         refresh_token: refreshToken
       });
+
+      // Add null check to prevent runtime error
+      if (!body) {
+        throw new Error('Failed to create request body for token refresh');
+      }
 
       const response = await fetch(tokenUrl, {
         method: 'POST',

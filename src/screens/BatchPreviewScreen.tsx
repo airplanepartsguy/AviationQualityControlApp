@@ -25,6 +25,9 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../styles/theme'
 import * as FileSystem from 'expo-file-system';
 import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService';
 import * as databaseService from '../services/databaseService';
+import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext';
+import salesforceUploadService from '../services/salesforceUploadService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -37,6 +40,10 @@ type SelectionMode = 'none' | 'select';
 const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
   // Extract the batchId from route params
   const { batchId } = route.params;
+  
+  // Contexts
+  const { user } = useAuth();
+  const { currentCompany } = useCompany();
   
   // State for batch details
   const [batchDetails, setBatchDetails] = useState<{
@@ -57,6 +64,14 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
   const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchActive, setIsSearchActive] = useState(false);
+  
+  // Salesforce upload state
+  const [isUploadingToSalesforce, setIsUploadingToSalesforce] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{
+    status: 'idle' | 'uploading' | 'success' | 'error';
+    message?: string;
+    scannedId?: string;
+  }>({ status: 'idle' });
   
   // Animation values
   const listOpacity = useRef(new Animated.Value(1)).current;
@@ -306,6 +321,129 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
     });
   };
 
+  // Handle Salesforce upload
+  const handleUploadToSalesforce = async () => {
+    if (!currentCompany) {
+      Alert.alert('Error', 'No company selected');
+      return;
+    }
+
+    if (currentBatch.length === 0) {
+      Alert.alert('Error', 'No photos to upload');
+      return;
+    }
+
+    // Prompt user for scanned ID
+    Alert.prompt(
+      'Upload to Salesforce',
+      'Enter the scanned ID (e.g., INV-420, PO-123):',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Upload',
+          onPress: async (scannedId) => {
+            if (!scannedId?.trim()) {
+              Alert.alert('Error', 'Please enter a valid scanned ID');
+              return;
+            }
+            await performSalesforceUpload(scannedId.trim());
+          }
+        }
+      ],
+      'plain-text',
+      orderNumber || '' // Pre-fill with order number if available
+    );
+  };
+
+  // Perform the actual Salesforce upload
+  const performSalesforceUpload = async (scannedId: string) => {
+    try {
+      setIsUploadingToSalesforce(true);
+      setUploadStatus({ status: 'uploading', scannedId });
+
+      console.log('[BatchPreview] Starting Salesforce upload for:', scannedId);
+      
+      // Generate PDF from current batch photos
+      // For now, we'll create a simple base64 PDF
+      // In a real implementation, this would generate the actual PDF from photos
+      const testPdfBase64 = createTestPdfBase64(scannedId);
+
+      const result = await salesforceUploadService.uploadPdfByScannedId(
+        currentCompany!.id,
+        scannedId,
+        testPdfBase64
+      );
+
+      if (result.success) {
+        setUploadStatus({
+          status: 'success',
+          message: result.message,
+          scannedId
+        });
+        
+        Alert.alert(
+          'Upload Successful!',
+          result.message,
+          [{ text: 'OK' }]
+        );
+        
+        // Log analytics event
+        logAnalyticsEvent('salesforce_upload_success', {
+          batchId,
+          scannedId,
+          photoCount: currentBatch.length
+        });
+      } else {
+        setUploadStatus({
+          status: 'error',
+          message: result.message,
+          scannedId
+        });
+        
+        Alert.alert(
+          'Upload Failed',
+          result.message,
+          [{ text: 'OK' }]
+        );
+        
+        // Log analytics event
+        logAnalyticsEvent('salesforce_upload_error', {
+          batchId,
+          scannedId,
+          error: result.message,
+          photoCount: currentBatch.length
+        });
+      }
+    } catch (error) {
+      console.error('[BatchPreview] Salesforce upload failed:', error);
+      
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setUploadStatus({
+        status: 'error',
+        message: errorMessage,
+        scannedId
+      });
+      
+      Alert.alert(
+        'Upload Error',
+        errorMessage,
+        [{ text: 'OK' }]
+      );
+      
+      // Log error
+      logErrorToFile('salesforce_upload_error', error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      setIsUploadingToSalesforce(false);
+    }
+  };
+
+  // Create a simple test PDF in base64 format
+  const createTestPdfBase64 = (scannedId: string): string => {
+    // This is a minimal PDF file in base64 format
+    // In a real app, this would be the merged PDF from photos
+    return 'JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwovUGFnZXMgMiAwIFIKPj4KZW5kb2JqCjIgMCBvYmoKPDwKL1R5cGUgL1BhZ2VzCi9LaWRzIFszIDAgUl0KL0NvdW50IDEKPD4KZW5kb2JqCjMgMCBvYmoKPDwKL1R5cGUgL1BhZ2UKL1BhcmVudCAyIDAgUgovTWVkaWFCb3ggWzAgMCA2MTIgNzkyXQovQ29udGVudHMgNCAwIFIKPj4KZW5kb2JqCjQgMCBvYmoKPDwKL0xlbmd0aCA0NAo+PgpzdHJlYW0KQLQKMC4wNzUgMCAwIDAuMDc1IDAgMCBjbQpCVAovRjEgMTIgVGYKNzIgNzIwIFRkCihUZXN0IFBERikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8Ci9UeXBlIC9Gb250Ci9TdWJ0eXBlIC9UeXBlMQovQmFzZUZvbnQgL0hlbHZldGljYQo+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjA3IDAwMDAwIG4gCjAwMDAwMDAzMDEgMDAwMDAgbiAKdHJhaWxlcgo8PAovU2l6ZSA2Ci9Sb290IDEgMCBSCj4+CnN0YXJ0eHJlZgozNzAKJSVFT0Y=';
+  };
+
   // We already have handleAnnotatePhoto and handleDeletePhoto defined above
   
   // Define renderPhotoItem inside the component
@@ -396,11 +534,60 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
             title="Generate PDF" 
             onPress={handleProceedToPDF} 
             variant="primary"
-            disabled={currentBatch.length === 0} // Keep disabled state
+            disabled={currentBatch.length === 0}
             style={styles.footerButton}
             icon={<Ionicons name="document-text-outline" size={20} color={COLORS.white} />}
           />
+          <CustomButton 
+            title={isUploadingToSalesforce ? "Uploading..." : "Upload to Salesforce"} 
+            onPress={handleUploadToSalesforce} 
+            variant="secondary"
+            disabled={currentBatch.length === 0 || isUploadingToSalesforce}
+            style={[
+              styles.footerButton,
+              uploadStatus.status === 'success' && styles.successButton,
+              uploadStatus.status === 'error' && styles.errorButton
+            ]}
+            icon={
+              isUploadingToSalesforce ? (
+                <ActivityIndicator size={16} color={COLORS.white} />
+              ) : (
+                <Ionicons 
+                  name={uploadStatus.status === 'success' ? "checkmark-circle-outline" : "cloud-upload-outline"} 
+                  size={20} 
+                  color={COLORS.white} 
+                />
+              )
+            }
+          />
         </View>
+        
+        {/* Upload Status Indicator */}
+        {uploadStatus.status !== 'idle' && (
+          <View style={styles.statusIndicator}>
+            <View style={[
+              styles.statusBadge,
+              uploadStatus.status === 'uploading' && styles.uploadingBadge,
+              uploadStatus.status === 'success' && styles.successBadge,
+              uploadStatus.status === 'error' && styles.errorBadge
+            ]}>
+              <Ionicons 
+                name={
+                  uploadStatus.status === 'uploading' ? "cloud-upload-outline" :
+                  uploadStatus.status === 'success' ? "checkmark-circle" :
+                  "alert-circle"
+                }
+                size={16}
+                color={COLORS.white}
+              />
+              <Text style={styles.statusText}>
+                {uploadStatus.status === 'uploading' && `Uploading ${uploadStatus.scannedId}...`}
+                {uploadStatus.status === 'success' && `✓ Uploaded ${uploadStatus.scannedId}`}
+                {uploadStatus.status === 'error' && `✗ Upload failed: ${uploadStatus.message}`}
+              </Text>
+            </View>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -521,6 +708,43 @@ const styles = StyleSheet.create({
       fontSize: FONTS.medium,
       color: COLORS.textLight,
       marginTop: SPACING.medium,
+  },
+  successButton: {
+    backgroundColor: COLORS.success,
+  },
+  errorButton: {
+    backgroundColor: COLORS.error,
+  },
+  statusIndicator: {
+    position: 'absolute',
+    bottom: 80, // Above footer buttons
+    left: SPACING.medium,
+    right: SPACING.medium,
+    zIndex: 1000,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.medium,
+    paddingVertical: SPACING.small,
+    borderRadius: BORDER_RADIUS.medium,
+    ...SHADOWS.small,
+  },
+  uploadingBadge: {
+    backgroundColor: COLORS.primary,
+  },
+  successBadge: {
+    backgroundColor: COLORS.success,
+  },
+  errorBadge: {
+    backgroundColor: COLORS.error,
+  },
+  statusText: {
+    color: COLORS.white,
+    fontSize: FONTS.small,
+    fontWeight: '500',
+    marginLeft: SPACING.small,
+    flex: 1,
   },
 });
 

@@ -1,0 +1,636 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Alert,
+  Switch,
+  SafeAreaView,
+  ActivityIndicator,
+  Button
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, CARD_STYLES } from '../styles/theme';
+import { getAvailableERPIntegrations, type ERPIntegrationAvailability } from '../services/erpIntegrationPermissionsService';
+import * as sharepointService from '../services/sharepointService';
+import companyIntegrationsService from '../services/companyIntegrationsService';
+import * as databaseService from '../services/databaseService';
+import erpLicenseService, { ERPSystemAvailability, ERPSystemInfo } from '../services/erpLicenseService';
+
+interface ERPConnection {
+  id: string;
+  name: string;
+  type: string;
+  status: 'connected' | 'disconnected' | 'error';
+  lastSync?: string;
+  icon: string;
+  color: string;
+  enabled: boolean;
+}
+
+interface ERPSystemDisplay extends ERPSystemAvailability, ERPSystemInfo {
+  configured?: CompanyERPIntegration;
+}
+
+const ERPScreen: React.FC = () => {
+  const { user } = useAuth();
+  const { currentCompany } = useCompany();
+  const navigation = useNavigation();
+  const [erpSystems, setERPSystems] = useState<ERPSystemDisplay[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [licenseType, setLicenseType] = useState<string | null>(null);
+  const [sharepointStats, setSharepointStats] = useState({
+    totalUploads: 0,
+    successfulUploads: 0,
+    failedUploads: 0,
+    pendingUploads: 0
+  });
+
+  useEffect(() => {
+    loadConnections();
+  }, []);
+
+  const loadConnections = async () => {
+    try {
+      setIsLoading(true);
+      
+      if (!currentCompany?.id) {
+        console.log('[ERPScreen] No current company, skipping integration load');
+        setIsLoading(false);
+        return;
+      }
+      
+      // Load ERP integration summary using license-level controls
+      const erpSummary = await erpLicenseService.getERPIntegrationSummary(currentCompany.id);
+      
+      // Map available systems to display format
+      const systemsDisplay: ERPSystemDisplay[] = erpSummary.available.map(system => {
+        const configured = erpSummary.configured.find(c => c.erp_system === system.erp_system);
+        return {
+          ...system,
+          configured
+        };
+      });
+      
+      setERPSystems(systemsDisplay);
+      setLicenseType(erpSummary.licenseType);
+      
+      // Load SharePoint stats if SharePoint is available
+      const hasSharePoint = systemsDisplay.some(s => s.erp_system === 'sharepoint');
+      if (hasSharePoint) {
+        try {
+          const stats = await sharepointService.getSharePointStats(currentCompany?.id || '');
+          setSharepointStats(stats);
+        } catch (error) {
+          console.log('[ERPScreen] SharePoint stats not available:', error);
+        }
+      }
+      
+    } catch (error) {
+      console.error('[ERPScreen] Error loading ERP systems:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setIsLoading(true);
+    try {
+      // Sync SharePoint connections
+      const sharePointSystems = erpSystems.filter(system => 
+        system.erp_system === 'sharepoint' && 
+        system.configured?.status === 'active'
+      );
+      
+      for (const system of sharePointSystems) {
+        if (system.configured) {
+          await sharepointService.queueBatchForSharePoint(system.configured.id, 'all_pending');
+        }
+      }
+      
+      // Update stats after sync
+      await loadERPStats();
+      
+      Alert.alert('Success', 'ERP data synchronized successfully');
+    } catch (error) {
+      console.error('Sync failed:', error);
+      Alert.alert('Error', 'Failed to synchronize ERP data');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleConfigureSharePoint = () => {
+    navigation.navigate('SharePointConfig' as never);
+  };
+
+  const handleConfigureSalesforce = () => {
+    navigation.navigate('SalesforceConfig' as never);
+  };
+
+  const [stats, setStats] = useState({ orders: 0, inventory: 0, synced: 0 });
+
+  useEffect(() => {
+    loadERPStats();
+  }, []);
+
+  const loadERPStats = async () => {
+    if (!user?.id) return;
+    
+    try {
+      const batches = await databaseService.getAllPhotoBatchesForUser(user.id);
+      const orders = batches.filter(b => b.type === 'Order').length;
+      const inventory = batches.filter(b => b.type === 'Inventory').length;
+      const synced = batches.filter(b => b.syncStatus === 'synced').length;
+      
+      setStats({ orders, inventory, synced });
+    } catch (error) {
+      console.error('Error loading ERP stats:', error);
+    }
+  };
+
+  const handleConnectionToggle = (connectionId: string, connection: ERPConnection) => {
+    if (connection.enabled) {
+      // Disconnecting - show confirmation dialog with warnings
+      Alert.alert(
+        'Disconnect ERP Integration',
+        `⚠️ WARNING: This will disconnect ${connection.name} integration.\n\n` +
+        `This action will:\n` +
+        `• Stop all data synchronization\n` +
+        `• Disable automatic uploads\n` +
+        `• Require re-authentication to reconnect\n\n` +
+        `Are you sure you want to proceed?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Disconnect', 
+            style: 'destructive',
+            onPress: () => confirmDisconnection(connectionId, connection)
+          }
+        ]
+      );
+    } else {
+      // Connecting - redirect to configuration
+      if (connection.type === 'SharePoint') {
+        handleConfigureSharePoint();
+      } else if (connection.type === 'Salesforce') {
+        handleConfigureSalesforce();
+      } else {
+        Alert.alert('Info', `${connection.type} configuration coming soon!`);
+      }
+    }
+  };
+
+  const confirmDisconnection = async (connectionId: string, connection: ERPConnection) => {
+    try {
+      setIsLoading(true);
+      
+      // For Salesforce, clear stored tokens and update integration status
+      if (connection.type === 'Salesforce' && currentCompany?.id) {
+        await companyIntegrationsService.updateIntegrationStatus(
+          connectionId,
+          'inactive',
+          'Manually disconnected by user'
+        );
+      }
+      
+      // Refresh ERP systems to reflect changes
+      await loadConnections();
+      
+      Alert.alert(
+        'Integration Disconnected',
+        `${connection.name} has been successfully disconnected. You can reconnect anytime through the Configure button.`,
+        [{ text: 'OK' }]
+      );
+      
+    } catch (error) {
+      console.error('Error disconnecting integration:', error);
+      Alert.alert('Error', 'Failed to disconnect integration. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTestConnection = async (system: ERPSystemDisplay) => {
+    try {
+      if (!currentCompany?.id) {
+        Alert.alert('Error', 'No company selected');
+        return;
+      }
+
+      if (system.erp_system === 'sharepoint' && system.configured) {
+        const success = await sharepointService.testSharePointConnection(system.configured.id);
+        await erpLicenseService.updateERPIntegrationStatus(
+          currentCompany.id,
+          'sharepoint',
+          success ? 'active' : 'error',
+          success ? 'Connection test successful' : 'Connection test failed'
+        );
+      } else if (system.erp_system === 'avsight_salesforce') {
+        // Test Salesforce connection using the integration service
+        const testResult = await companyIntegrationsService.testSalesforceConnection(currentCompany.id);
+        const success = testResult.success;
+        
+        await erpLicenseService.updateERPIntegrationStatus(
+          currentCompany.id,
+          'avsight_salesforce',
+          success ? 'active' : 'error',
+          success ? 'Salesforce connection test successful' : 'Salesforce connection test failed'
+        );
+        
+        Alert.alert(
+          success ? 'Success' : 'Error', 
+          success ? 'Salesforce connection test successful!' : 'Salesforce connection test failed. Please check your configuration.'
+        );
+      } else {
+        // Simulate connection test for other ERP systems
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        await erpLicenseService.updateERPIntegrationStatus(
+          currentCompany.id,
+          system.erp_system,
+          'active',
+          'Connection test successful'
+        );
+      }
+      
+      // Reload connections to reflect updated status
+      await loadConnections();
+      
+    } catch (error) {
+      console.error('Connection test failed:', error);
+      
+      if (currentCompany?.id) {
+        await erpLicenseService.updateERPIntegrationStatus(
+          currentCompany.id,
+          system.erp_system,
+          'error',
+          'Connection test failed'
+        );
+      }
+      
+      if (system.erp_system === 'avsight_salesforce') {
+        Alert.alert('Error', 'Salesforce connection test failed. Please check your configuration.');
+      } else {
+        Alert.alert('Error', `${system.name} connection test failed. Please check your configuration.`);
+      }
+      
+      // Reload connections to reflect updated status
+      await loadConnections();
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'connected': return COLORS.success;
+      case 'error': return COLORS.error;
+      default: return COLORS.textLight;
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'connected': return 'checkmark-circle';
+      case 'error': return 'alert-circle';
+      default: return 'ellipse-outline';
+    }
+  };
+
+  const renderERPSystem = (system: ERPSystemDisplay) => {
+    const status = system.configured?.status || 'inactive';
+    const displayStatus = status === 'active' ? 'connected' : status === 'error' ? 'error' : 'disconnected';
+    
+    return (
+      <View key={system.erp_system} style={styles.connectionCard}>
+        <View style={styles.connectionHeader}>
+          <View style={styles.connectionInfo}>
+            <View style={styles.connectionTitleRow}>
+              <Text style={styles.connectionName}>{system.name}</Text>
+              <View style={styles.statusContainer}>
+                <Ionicons 
+                  name={getStatusIcon(displayStatus)} 
+                  size={16} 
+                  color={getStatusColor(displayStatus)} 
+                />
+                <Text style={[styles.statusText, { color: getStatusColor(displayStatus) }]}>
+                  {displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1)}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.connectionType}>{system.description}</Text>
+            {system.configured?.last_test_at && (
+              <Text style={styles.lastSync}>
+                Last test: {new Date(system.configured.last_test_at).toLocaleString()}
+              </Text>
+            )}
+            {!system.can_add_more && system.current_connections >= system.max_connections && (
+              <Text style={styles.limitText}>
+                Connection limit reached ({system.current_connections}/{system.max_connections})
+              </Text>
+            )}
+          </View>
+        </View>
+        
+        <View style={styles.connectionActions}>
+          <TouchableOpacity 
+            style={[styles.actionButton, styles.testButton]}
+            onPress={() => handleTestConnection(system)}
+            disabled={isLoading || !system.configured}
+          >
+            <Ionicons name="flash" size={16} color={COLORS.primary} />
+            <Text style={styles.testButtonText}>Test Connection</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={[styles.actionButton, styles.configButton]}
+            onPress={() => {
+              if (system.erp_system === 'sharepoint') {
+                handleConfigureSharePoint();
+              } else if (system.erp_system === 'avsight_salesforce') {
+                handleConfigureSalesforce();
+              } else {
+                Alert.alert('Info', `${system.name} configuration coming soon!`);
+              }
+            }}
+          >
+            <Ionicons name="settings" size={16} color={COLORS.textLight} />
+            <Text style={styles.configButtonText}>Configure</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        {/* Stats Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>ERP Integration Overview</Text>
+          <View style={styles.statsContainer}>
+            <View style={styles.statItem}>
+              <Ionicons name="document-text" size={24} color={COLORS.primary} />
+              <Text style={styles.statValue}>{stats.orders}</Text>
+              <Text style={styles.statLabel}>Orders</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Ionicons name="cube" size={24} color={COLORS.primary} />
+              <Text style={styles.statValue}>{stats.inventory}</Text>
+              <Text style={styles.statLabel}>Inventory</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Ionicons name="cloud-done" size={24} color={COLORS.success} />
+              <Text style={styles.statValue}>{stats.synced}</Text>
+              <Text style={styles.statLabel}>Synced</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* ERP Systems Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>ERP Systems</Text>
+          {licenseType && (
+            <Text style={styles.licenseInfo}>
+              License: {licenseType.charAt(0).toUpperCase() + licenseType.slice(1)}
+            </Text>
+          )}
+          {erpSystems.map(renderERPSystem)}
+        </View>
+
+        {/* Quick Actions */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Quick Actions</Text>
+          <View style={styles.card}>
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => Alert.alert('Info', 'Sync all data with connected ERP systems')}
+            >
+              <Ionicons name="sync" size={20} color={COLORS.primary} />
+              <Text style={styles.quickActionText}>Sync All Data</Text>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textLight} />
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => Alert.alert('Info', 'Import orders from ERP systems')}
+            >
+              <Ionicons name="download" size={20} color={COLORS.primary} />
+              <Text style={styles.quickActionText}>Import Orders</Text>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textLight} />
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.quickAction}
+              onPress={() => Alert.alert('Info', 'Export quality data to ERP systems')}
+            >
+              <Ionicons name="cloud-upload" size={20} color={COLORS.primary} />
+              <Text style={styles.quickActionText}>Export Quality Data</Text>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textLight} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </ScrollView>
+      
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>Testing connection...</Text>
+        </View>
+      )}
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  scrollView: {
+    flex: 1,
+    padding: SPACING.medium,
+  },
+  section: {
+    marginBottom: SPACING.large,
+  },
+  sectionTitle: {
+    fontSize: FONTS.large,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.text,
+    marginBottom: SPACING.medium,
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    ...CARD_STYLES.elevated,
+    padding: SPACING.medium,
+    marginBottom: SPACING.medium,
+  },
+  statItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statValue: {
+    fontSize: FONTS.xxlarge,
+    fontWeight: FONTS.bold,
+    color: COLORS.primary,
+    marginTop: SPACING.small,
+  },
+  statLabel: {
+    fontSize: FONTS.small,
+    color: COLORS.textLight,
+    marginTop: SPACING.small,
+  },
+  connectionCard: {
+    ...CARD_STYLES.elevated,
+    padding: SPACING.medium,
+    marginBottom: SPACING.medium,
+  },
+  connectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: SPACING.medium,
+  },
+  connectionInfo: {
+    flex: 1,
+    marginRight: SPACING.medium,
+  },
+  connectionTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.small,
+  },
+  connectionName: {
+    fontSize: FONTS.medium,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.text,
+    flex: 1,
+  },
+  statusContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusText: {
+    fontSize: FONTS.small,
+    marginLeft: SPACING.small,
+    fontWeight: FONTS.semiBold,
+  },
+  connectionType: {
+    fontSize: FONTS.regular,
+    color: COLORS.textLight,
+    marginBottom: SPACING.small,
+  },
+  lastSync: {
+    fontSize: FONTS.small,
+    color: COLORS.textLight,
+  },
+  licenseInfo: {
+    fontSize: FONTS.small,
+    color: COLORS.textLight,
+    marginBottom: SPACING.medium,
+    fontStyle: 'italic',
+  },
+  limitText: {
+    fontSize: FONTS.small,
+    color: COLORS.warning,
+    fontStyle: 'italic',
+    marginTop: SPACING.tiny,
+  },
+  connectionToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.medium,
+    paddingVertical: SPACING.small,
+    borderRadius: BORDER_RADIUS.medium,
+    borderWidth: 1,
+  },
+  toggleEnabled: {
+    backgroundColor: COLORS.primaryLight,
+    borderColor: COLORS.success,
+  },
+  toggleDisabled: {
+    backgroundColor: COLORS.card,
+    borderColor: COLORS.border,
+  },
+  toggleText: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.semiBold,
+    marginLeft: SPACING.small,
+  },
+  connectionActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.small,
+    paddingHorizontal: SPACING.medium,
+    borderRadius: BORDER_RADIUS.medium,
+    flex: 0.48,
+    justifyContent: 'center',
+  },
+  testButton: {
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  testButtonText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.primary,
+    marginLeft: SPACING.tiny,
+  },
+  configButton: {
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  configButtonText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.semiBold,
+    color: COLORS.textLight,
+    marginLeft: SPACING.tiny,
+  },
+  card: {
+    ...CARD_STYLES.elevated,
+    padding: 0,
+  },
+  quickAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.medium,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  quickActionText: {
+    fontSize: FONTS.regular,
+    color: COLORS.text,
+    flex: 1,
+    marginLeft: SPACING.medium,
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: FONTS.regular,
+    color: COLORS.white,
+    marginTop: SPACING.medium,
+  },
+});
+
+export default ERPScreen;

@@ -315,76 +315,202 @@ export const getUserCompanies = async (userId: string): Promise<Company[]> => {
   try {
     console.log('[CompanyService] Getting companies for user:', userId);
     
-    // Query Supabase to get user's company via profiles.company_id
-    const { data: profileData, error: profileError } = await supabase
+    // Validate userId
+    if (!userId || typeof userId !== 'string') {
+      console.error('[CompanyService] Invalid userId provided:', userId);
+      return await createDefaultCompanyForUser('temp_user');
+    }
+    
+    // First, try to get user's profile to check for company_id
+    const profileResponse = await supabase
       .from('profiles')
-      .select(`
-        company_id,
-        companies (
-          id,
-          name,
-          created_at
-        )
-      `)
+      .select('company_id, full_name, email')
       .eq('id', userId)
       .single();
     
-    if (profileError) {
-      console.error('[CompanyService] Error fetching user profile:', profileError);
-      return [];
+    // Check if response exists and handle errors
+    if (!profileResponse || profileResponse.error) {
+      console.error('[CompanyService] Error fetching user profile:', profileResponse?.error || 'No response');
+      return await createDefaultCompanyForUser(userId);
     }
     
-    if (!profileData?.company_id || !profileData.companies) {
-      console.log('[CompanyService] User has no company association');
-      return [];
+    const profileData = profileResponse.data;
+    
+    // If user has a company_id, try to get the company details
+    if (profileData?.company_id) {
+      const companyResponse = await supabase
+        .from('companies')
+        .select('*')
+        .eq('id', profileData.company_id)
+        .single();
+      
+      // Check if company response exists and is valid
+      if (companyResponse && !companyResponse.error && companyResponse.data) {
+        const companyData = companyResponse.data;
+        
+        const company: Company = {
+          id: companyData.id || `temp_${userId}`,
+          name: companyData.name || 'Default Company',
+          code: companyData.code || 'DEFAULT',
+          industry: companyData.industry || 'Aviation',
+          address: companyData.address || '',
+          phone: companyData.phone || '',
+          email: companyData.email || '',
+          website: companyData.website || '',
+          logoUrl: companyData.logo_url || '',
+          settings: getDefaultCompanySettings(),
+          subscription: getDefaultCompanySubscription(),
+          isActive: true,
+          createdAt: companyData.created_at || new Date().toISOString(),
+          updatedAt: companyData.updated_at || companyData.created_at || new Date().toISOString()
+        };
+        
+        console.log('[CompanyService] Found existing company:', company.name);
+        return [company];
+      } else {
+        console.warn('[CompanyService] Company not found or error:', companyResponse?.error);
+      }
     }
     
-    // Convert to Company format
-    const companyData = Array.isArray(profileData.companies) ? profileData.companies[0] : profileData.companies;
-    
-    const company: Company = {
-      id: companyData.id,
-      name: companyData.name,
-      code: '', // Not in current schema
-      industry: '', // Not in current schema
-      address: '', // Not in current schema
-      phone: '', // Not in current schema
-      email: '', // Not in current schema
-      website: '', // Not in current schema
-      logoUrl: '', // Not in current schema
-      settings: {
-        timezone: 'UTC',
-        dateFormat: 'MM/DD/YYYY',
-        currency: 'USD',
-        language: 'en',
-        photoQuality: 'medium',
-        maxPhotosPerBatch: 50,
-        autoSync: true,
-        retentionDays: 365,
-        allowGuestAccess: false,
-        requireApproval: false
-      },
-      subscription: {
-        plan: 'basic',
-        status: 'active',
-        maxUsers: 10,
-        maxDevices: 5,
-        maxStorage: 1000,
-        features: [],
-        expiresAt: null,
-        billingCycle: 'monthly'
-      },
-      isActive: true,
-      createdAt: companyData.created_at,
-      updatedAt: companyData.created_at
-    };
-    
-    console.log('[CompanyService] Found company:', company.name);
-    return [company];
+    // If no company found or company_id is null, create a default company
+    console.log('[CompanyService] No company found, creating default company for user');
+    return await createDefaultCompanyForUser(userId, profileData?.full_name, profileData?.email);
     
   } catch (error) {
     console.error('[CompanyService] Error getting user companies:', error);
-    return [];
+    return await createDefaultCompanyForUser(userId || 'temp_user');
+  }
+};
+
+/**
+ * Create a default company for a user who doesn't have one
+ */
+const createDefaultCompanyForUser = async (
+  userId: string, 
+  userName?: string, 
+  userEmail?: string
+): Promise<Company[]> => {
+  try {
+    console.log('[CompanyService] Creating default company for user:', userId);
+    
+    // Create a default company in Supabase
+    const companyName = userName ? `${userName}'s Company` : 'Default Company';
+    const companyCode = `USER_${userId.substring(0, 8).toUpperCase()}`;
+    
+    const companyResponse = await supabase
+      .from('companies')
+      .insert({
+        name: companyName,
+        code: companyCode,
+        industry: 'Aviation',
+        email: userEmail || '',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    
+    // Check if response exists and handle errors
+    if (!companyResponse || companyResponse.error) {
+      console.error('[CompanyService] Error creating default company:', companyResponse?.error || 'No response');
+      // Return a temporary company object for the session
+      return [{
+        id: `temp_${userId}`,
+        name: companyName,
+        code: companyCode,
+        industry: 'Aviation',
+        address: '',
+        phone: '',
+        email: userEmail || '',
+        website: '',
+        logoUrl: '',
+        settings: getDefaultCompanySettings(),
+        subscription: getDefaultCompanySubscription(),
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }];
+    }
+    
+    const newCompany = companyResponse.data;
+    
+    // Validate that newCompany data exists
+    if (!newCompany || !newCompany.id) {
+      console.error('[CompanyService] Invalid company data returned from Supabase');
+      // Return a temporary company object for the session
+      return [{
+        id: `temp_${userId}`,
+        name: companyName,
+        code: companyCode,
+        industry: 'Aviation',
+        address: '',
+        phone: '',
+        email: userEmail || '',
+        website: '',
+        logoUrl: '',
+        settings: getDefaultCompanySettings(),
+        subscription: getDefaultCompanySubscription(),
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }];
+    }
+    
+    // Update user's profile with the new company_id
+    await supabase
+      .from('profiles')
+      .update({ company_id: newCompany.id })
+      .eq('id', userId);
+    
+    // Create default ERP integration permissions for the new company
+    try {
+      const { createDefaultERPPermissions } = await import('./erpIntegrationPermissionsService');
+      await createDefaultERPPermissions(newCompany.id);
+      console.log('[CompanyService] Created default ERP permissions for company:', newCompany.id);
+    } catch (erpError) {
+      console.warn('[CompanyService] Could not create ERP permissions (table may not exist):', erpError);
+      // Don't fail company creation if ERP permissions fail
+    }
+    
+    const company: Company = {
+      id: newCompany.id,
+      name: newCompany.name,
+      code: newCompany.code,
+      industry: newCompany.industry || 'Aviation',
+      address: newCompany.address || '',
+      phone: newCompany.phone || '',
+      email: newCompany.email || '',
+      website: newCompany.website || '',
+      logoUrl: newCompany.logo_url || '',
+      settings: getDefaultCompanySettings(),
+      subscription: getDefaultCompanySubscription(),
+      isActive: true,
+      createdAt: newCompany.created_at,
+      updatedAt: newCompany.updated_at || newCompany.created_at
+    };
+    
+    console.log('[CompanyService] Created new company:', company.name);
+    return [company];
+    
+  } catch (error) {
+    console.error('[CompanyService] Error creating default company:', error);
+    // Return a fallback temporary company
+    return [{
+      id: `temp_${userId}`,
+      name: userName ? `${userName}'s Company` : 'Default Company',
+      code: `USER_${userId.substring(0, 8).toUpperCase()}`,
+      industry: 'Aviation',
+      address: '',
+      phone: '',
+      email: userEmail || '',
+      website: '',
+      logoUrl: '',
+      settings: getDefaultCompanySettings(),
+      subscription: getDefaultCompanySubscription(),
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }];
   }
 };
 

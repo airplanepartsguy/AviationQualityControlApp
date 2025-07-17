@@ -16,11 +16,13 @@ import { Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, CARD_STYLES } from '../styles/theme';
 import companyIntegrationsService, { SalesforceConfig, CompanyIntegration } from '../services/companyIntegrationsService';
 import { salesforceOAuthService } from '../services/salesforceOAuthService';
+import { supabase } from '../services/supabaseService';
 import { RootStackParamList } from '../types/navigation';
 
 type SalesforceConfigScreenNavigationProp = StackNavigationProp<RootStackParamList>;
@@ -117,10 +119,8 @@ const SalesforceConfigScreen: React.FC = () => {
           
           const config = integration.config as any;
           
-          // For deep link callbacks, we need to get the stored code verifier
-          // The code verifier should have been stored when the OAuth flow was initiated
-          // For now, we'll retrieve it from the callback data in Supabase
-          const callbackData = await salesforceOAuthService.retrieveOAuthCallback(currentCompany.id);
+          // With the new direct token exchange approach, tokens are handled by the Edge Function
+          // We just need to check if tokens are now available
           
           // Note: The current OAuth service doesn't store code verifier in callback data
           // This is a limitation that needs to be addressed for full PKCE support
@@ -326,38 +326,44 @@ const SalesforceConfigScreen: React.FC = () => {
     return true;
   };
 
-  const startOAuthPolling = (companyId: string) => {
-    console.log('[SalesforceConfig] Starting OAuth polling for company:', companyId);
+  const checkOAuthTokens = (companyId: string) => {
+    console.log('[SalesforceConfig] Starting OAuth token checking for company:', companyId);
     
     let pollCount = 0;
-    const maxPolls = 60; // Poll for 5 minutes (60 * 5 seconds)
+    const maxPolls = 60; // Check for 5 minutes (60 * 5 seconds)
     
     const pollInterval = setInterval(async () => {
       pollCount++;
-      console.log(`[SalesforceConfig] OAuth poll attempt ${pollCount}/${maxPolls}`);
+      console.log(`[SalesforceConfig] OAuth token check attempt ${pollCount}/${maxPolls}`);
       
       try {
-        const callbackData = await salesforceOAuthService.retrieveOAuthCallback(companyId);
+        const tokenResult = await salesforceOAuthService.checkOAuthTokens(companyId);
         
-        if (callbackData.authCode) {
-          console.log('[SalesforceConfig] OAuth callback received! Processing...');
+        if (tokenResult.success) {
+          console.log('[SalesforceConfig] OAuth tokens found! Integration is active.');
           clearInterval(pollInterval);
           
-          // Process the OAuth callback
-          await processOAuthCallback(companyId, callbackData.authCode);
+          // Update integration status and reload config
+          await loadSalesforceConfig();
           
-        } else if (callbackData.error) {
-          console.log('[SalesforceConfig] OAuth error received:', callbackData.error);
+          Alert.alert(
+            'Connection Successful',
+            'Salesforce integration is now active and ready to use!',
+            [{ text: 'OK' }]
+          );
+          
+        } else if (tokenResult.error === 'tokens_expired') {
+          console.log('[SalesforceConfig] OAuth tokens expired');
           clearInterval(pollInterval);
           
           Alert.alert(
-            'Authentication Failed',
-            `OAuth Error: ${callbackData.error}${callbackData.errorDescription ? '\n' + callbackData.errorDescription : ''}`,
+            'Authentication Expired',
+            'OAuth tokens have expired. Please authenticate again.',
             [{ text: 'OK' }]
           );
           
         } else if (pollCount >= maxPolls) {
-          console.log('[SalesforceConfig] OAuth polling timeout');
+          console.log('[SalesforceConfig] OAuth token check timeout');
           clearInterval(pollInterval);
           
           Alert.alert(
@@ -367,10 +373,10 @@ const SalesforceConfigScreen: React.FC = () => {
           );
         }
       } catch (error) {
-        console.error('[SalesforceConfig] OAuth polling error:', error);
-        // Continue polling on error, don't stop
+        console.error('[SalesforceConfig] OAuth token check error:', error);
+        // Continue checking on error, don't stop
       }
-    }, 5000); // Poll every 5 seconds
+    }, 5000); // Check every 5 seconds
   };
 
   const processOAuthCallback = async (companyId: string, authCode: string) => {
@@ -386,11 +392,30 @@ const SalesforceConfigScreen: React.FC = () => {
       
       const config = integration.config as any;
       
-      // Complete the OAuth flow
+      // CRITICAL FIX: Retrieve the stored PKCE code verifier
+      const codeVerifierKey = `oauth_code_verifier_${companyId}`;
+      let codeVerifier = '';
+      
+      try {
+        const storedVerifier = await SecureStore.getItemAsync(codeVerifierKey);
+        if (storedVerifier) {
+          codeVerifier = storedVerifier;
+          console.log('[SalesforceConfig] Retrieved PKCE code verifier from secure storage');
+          
+          // Clean up the stored verifier after use
+          await SecureStore.deleteItemAsync(codeVerifierKey);
+        } else {
+          console.warn('[SalesforceConfig] No PKCE code verifier found in secure storage');
+        }
+      } catch (verifierError) {
+        console.error('[SalesforceConfig] Error retrieving code verifier:', verifierError);
+      }
+      
+      // Complete the OAuth flow with the correct code verifier
       const tokenData = await salesforceOAuthService.completeOAuthFlow(
         companyId,
         authCode,
-        '', // Code verifier - handled by service
+        codeVerifier, // FIXED: Use the actual PKCE code verifier
         {
           clientId: config.client_id,
           clientSecret: config.client_secret,
@@ -454,8 +479,13 @@ const SalesforceConfigScreen: React.FC = () => {
         sandbox: config.sandbox
       };
       
-      // Initiate OAuth flow
-      const { authUrl } = await salesforceOAuthService.initiateOAuthFlow(currentCompany!.id, oauthConfig);
+      // Initiate OAuth flow and capture the PKCE code verifier
+      const { authUrl, codeChallenge } = await salesforceOAuthService.initiateOAuthFlow(currentCompany!.id, oauthConfig);
+      
+      // CRITICAL FIX: Store the PKCE code verifier for later use in token exchange
+      const codeVerifierKey = `oauth_code_verifier_${currentCompany!.id}`;
+      await SecureStore.setItemAsync(codeVerifierKey, codeChallenge);
+      console.log('[SalesforceConfig] Stored PKCE code verifier in secure storage');
       
       // Enhanced debugging for OAuth URL
       console.log('[SalesforceConfig] === OAUTH DEBUG INFO ===');
@@ -513,8 +543,8 @@ const SalesforceConfigScreen: React.FC = () => {
           { 
             text: 'Got it', 
             onPress: () => {
-              // Start polling for OAuth callback results
-              startOAuthPolling(currentCompany!.id);
+              // Start checking for OAuth tokens
+              checkOAuthTokens(currentCompany!.id);
             }
           }
         ]
