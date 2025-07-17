@@ -39,6 +39,10 @@ export interface RootStackParamList {
     pictureType?: 'Pictures' | 'Defect Pictures';
   };
   Debug: undefined; // For DebugScreen
+  Admin: undefined; // For AdminScreen - user and license management
+  CompanySelection: undefined; // For CompanySelectionScreen - multi-tenant company switching
+  SalesforceConfig: undefined; // For SalesforceConfigScreen - Salesforce integration setup
+  SalesforceTest: undefined; // For SalesforceTestScreen - PDF upload testing
   // No AnalyticsScreen here, it's a Tab
 }
 
@@ -88,3 +92,7 @@ export type PDFGenerationScreenRouteProp = PDFGenerationScreenProps['route'];
 export type PDFGenerationScreenNavigationProp = PDFGenerationScreenProps['navigation'];
 
 export type DebugScreenProps = StackScreenProps<RootStackParamList, 'Debug'>;
+
+export type AdminScreenProps = StackScreenProps<RootStackParamList, 'Admin'>;
+
+export type SalesforceTestScreenProps = StackScreenProps<RootStackParamList, 'SalesforceTest'>;

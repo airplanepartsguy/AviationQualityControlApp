@@ -88,9 +88,9 @@ export interface LocationData {
 // --- Offline Sync Queue Task ---
 export interface SyncTask {
   id: string;
-  type: 'pdf_upload' | 'data_sync';
+  type: 'pdf_upload' | 'data_sync' | 'profile_sync';
   payload: Record<string, any>; // e.g., { batchId: 'Order_123', pdfUri: '...' }
-  status: 'queued' | 'processing' | 'failed';
+  status: 'queued' | 'processing' | 'failed' | 'completed';
   attempts: number;
   lastAttempted?: string;
   error?: string;

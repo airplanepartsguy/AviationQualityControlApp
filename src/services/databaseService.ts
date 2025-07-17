@@ -1,6 +1,8 @@
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
 import { PhotoBatch, PhotoData, PhotoMetadata, AnnotationData } from '../types/data';
+import DatabaseMigrationService from './databaseMigrationService';
+import DatabaseResetUtility from '../utils/databaseReset';
 
 const DB_NAME = 'QualityControl.db';
 let db: SQLite.SQLiteDatabase | null = null;
@@ -10,12 +12,27 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   if (!db) {
     try {
       console.log('[databaseService] Opening database...');
-      db = await SQLite.openDatabaseAsync(DB_NAME);
+      
+      // Use safe initialization that handles schema issues automatically
+      db = await DatabaseResetUtility.safeInitialize();
+      
       console.log('[databaseService] Database opened successfully.');
       await initializeDatabase(db);
     } catch (error) {
       console.error('[databaseService] Failed to open or initialize database:', error);
-      throw error; // Rethrow to indicate failure
+      
+      // Try one more time with forced reset
+      try {
+        console.log('[databaseService] Attempting database reset and retry...');
+        await DatabaseResetUtility.resetDatabase();
+        db = await SQLite.openDatabaseAsync(DB_NAME);
+        await DatabaseMigrationService.migrate(db);
+        await initializeDatabase(db);
+        console.log('[databaseService] Database recovery successful');
+      } catch (retryError) {
+        console.error('[databaseService] Database recovery failed:', retryError);
+        throw retryError;
+      }
     }
   }
   return db;
@@ -25,39 +42,46 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
   console.log('[DB_DEBUG] initializeDatabase: Starting initialization...');
   console.log('[databaseService] Initializing database tables...');
   try {
-    await database.execAsync(`
-      PRAGMA journal_mode = WAL;
-
-      CREATE TABLE IF NOT EXISTS photo_batches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        referenceId TEXT, -- Added to store the original scanned/entered ID
-        orderNumber TEXT,
-        inventoryId TEXT,
-        userId TEXT NOT NULL,
-        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-        status TEXT DEFAULT 'pending' -- pending, completed, synced
-      );
-
-      CREATE TABLE IF NOT EXISTS photos (
-        id TEXT PRIMARY KEY, -- Use photoData.id (UUID or timestamp-based)
-        batchId INTEGER NOT NULL,
-        partNumber TEXT, -- Added part number
-        photoTitle TEXT, -- User-selected title for the photo
-        uri TEXT NOT NULL, -- Original photo URI
-        metadataJson TEXT NOT NULL, -- Store PhotoMetadata as JSON string
-        annotationsJson TEXT, -- Store AnnotationData[] as JSON string
-        FOREIGN KEY (batchId) REFERENCES photo_batches (id) ON DELETE CASCADE
-      );
-
-      -- TODO: Consider adding indexes for frequently queried columns (e.g., batchId, status)
-      CREATE INDEX IF NOT EXISTS idx_photos_batchId ON photos(batchId);
-      CREATE INDEX IF NOT EXISTS idx_batches_status ON photo_batches(status);
-    `);
-    console.log('[DB_DEBUG] initializeDatabase: CREATE TABLE statements executed.');
+    // Use migration system for safe schema updates
+    await DatabaseMigrationService.migrate(database);
+    
+    // Initialize other services after core tables are ready
+    await initializeAdditionalServices();
+    
     console.log('[DB_DEBUG] initializeDatabase: Database tables initialized successfully.');
   } catch (error) {
     console.error('[DB_DEBUG] initializeDatabase: Error initializing database tables:', error);
     throw error;
+  }
+};
+
+/**
+ * Initialize additional services after core database is ready
+ * This prevents circular dependency issues
+ */
+const initializeAdditionalServices = async (): Promise<void> => {
+  try {
+    // Initialize sync queue
+    const { initializeSyncQueue } = await import('./syncQueueService');
+    await initializeSyncQueue();
+    
+    // Initialize storage
+    const { initializeStorage } = await import('./storageService');
+    await initializeStorage();
+    
+    // Initialize licensing system
+    const { initializeLicensingTables } = await import('./licensingService');
+    await initializeLicensingTables();
+    
+    // Initialize batch management
+    const { initializeBatchManagementTables } = await import('./batchManagementService');
+    await initializeBatchManagementTables();
+    
+    console.log('[databaseService] Additional services initialized successfully');
+  } catch (error) {
+    console.error('[databaseService] Error initializing additional services:', error);
+    // Don't throw here - core database is working
+    console.log('[databaseService] Continuing with core database functionality');
   }
 };
 

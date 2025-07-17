@@ -24,6 +24,9 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import ERPScreen from './src/screens/ERPScreen';
 import AllBatchesScreen from './src/screens/AllBatchesScreen'; // Import the new screen
 import SettingsScreen from './src/screens/SettingsScreen';
+import AdminScreen from './src/screens/AdminScreen';
+import SalesforceConfigScreen from './src/screens/SalesforceConfigScreen';
+import SalesforceTestScreen from './src/screens/SalesforceTestScreen';
 
 // Import Navigation Types
 import { RootStackParamList, BottomTabParamList } from './src/types/navigation'; // Updated types
@@ -32,6 +35,7 @@ import { COLORS, FONTS, SHADOWS } from './src/styles/theme'; // Import theme
 // Import Contexts
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { SyncProvider } from './src/contexts/SyncContext';
+import { CompanyProvider } from './src/contexts/CompanyContext';
 
 // Import Services
 import networkService from './src/services/networkService';
@@ -236,6 +240,10 @@ const linkingConfig = {
       // should then process the URL tokens (e.g., #access_token=...)
       // via its onAuthStateChange listener and update the auth state.
       Login: 'auth-callback',
+      // Map OAuth success callback to Salesforce config screen
+      // When the app opens with AviationQualityControlApp://oauth/success?state=companyId,
+      // React Navigation will navigate to the SalesforceConfig screen
+      SalesforceConfig: 'oauth/success',
     },
   },
 };
@@ -339,6 +347,30 @@ function RootNavigator() {
               headerBackTitle: 'Back'
             }} 
           />
+          <RootStack.Screen 
+            name="Admin" 
+            component={AdminScreen} 
+            options={{ 
+              title: 'Admin Panel',
+              headerBackTitle: 'Back'
+            }} 
+          />
+          <RootStack.Screen 
+            name="SalesforceConfig" 
+            component={SalesforceConfigScreen} 
+            options={{ 
+              title: 'Salesforce Configuration',
+              headerBackTitle: 'Back'
+            }} 
+          />
+          <RootStack.Screen 
+            name="SalesforceTest" 
+            component={SalesforceTestScreen} 
+            options={{ 
+              title: 'Salesforce Upload Test',
+              headerBackTitle: 'Back'
+            }} 
+          />
         </RootStack.Navigator>
       ) : (
         <AuthStack.Navigator
@@ -365,14 +397,18 @@ const App: React.FC = () => {
     };
   }, []);
   
+
+  
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <SyncProvider>
-          <SyncManager>
-            <RootNavigator />
-          </SyncManager>
-        </SyncProvider>
+        <CompanyProvider>
+          <SyncProvider>
+            <SyncManager>
+              <RootNavigator />
+            </SyncManager>
+          </SyncProvider>
+        </CompanyProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );
