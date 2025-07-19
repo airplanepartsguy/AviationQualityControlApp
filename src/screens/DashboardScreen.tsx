@@ -16,16 +16,20 @@ import {
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { useAuth } from '../contexts/AuthContext'; 
+import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext'; 
 import CustomButton from '../components/CustomButton'; 
 import SyncStatusPanel from '../components/SyncStatusPanel';
 import NetworkStatusIndicator from '../components/NetworkStatusIndicator';
+import ErpSyncStatusIndicator from '../components/ErpSyncStatusIndicator';
+import QuickSyncButton from '../components/QuickSyncButton';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, CARD_STYLES, BUTTON_STYLES } from '../styles/theme'; 
 import { Ionicons } from '@expo/vector-icons'; 
 import { RootStackParamList } from '../types/navigation';
 import salesforceService from '../services/salesforceService';
 import * as databaseService from '../services/databaseService';
 import { logAnalyticsEvent } from '../services/analyticsService';
+import erpSyncService from '../services/erpSyncService';
 
 // Define the specific navigation prop type for this screen
 type DashboardScreenNavigationProp = StackNavigationProp<RootStackParamList, 'MainTabs'>;
@@ -38,12 +42,16 @@ type RecentBatchItem = {
   createdAt: string;
   photoCount: number;
   status: 'complete' | 'in_progress' | 'syncing' | 'error' | 'exported'; 
-  type?: 'Order' | 'Inventory' | 'Unknown'; 
+  type?: 'Order' | 'Inventory' | 'Unknown';
+  erpSyncStatus?: 'pending' | 'syncing' | 'synced' | 'failed';
+  erpSyncedAt?: string;
+  erpAttachmentId?: string; 
 };
 
 const DashboardScreen: React.FC = () => { 
   const navigation = useNavigation<DashboardScreenNavigationProp>();
-  const { user, logout } = useAuth(); 
+  const { user, logout } = useAuth();
+  const { currentCompany } = useCompany(); 
   
   const [recentBatches, setRecentBatches] = useState<RecentBatchItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -236,7 +244,15 @@ const DashboardScreen: React.FC = () => {
           </View>
         </View>
         <View style={styles.batchItemAction}>
-          <Ionicons name="chevron-forward" size={20} color={COLORS.primary} />
+          {item.erpSyncStatus && (
+            <ErpSyncStatusIndicator
+              syncStatus={item.erpSyncStatus}
+              erpSystem="Salesforce"
+              size="small"
+              showLabel={false}
+            />
+          )}
+          <Ionicons name="chevron-forward" size={20} color={COLORS.primary} style={{ marginLeft: SPACING.small }} />
         </View>
       </TouchableOpacity>
     );
@@ -276,6 +292,12 @@ const DashboardScreen: React.FC = () => {
                 <View style={styles.headerWelcomeSection}>
                   <Text style={styles.headerWelcomeText}>Hello,</Text>
                   <Text style={styles.headerUserName}>Welcome back, {user?.email || user?.id || 'User'}!</Text>
+                </View>
+                <View style={styles.headerActionsSection}>
+                  <QuickSyncButton 
+                    companyId={currentCompany?.id || ''}
+                    userId={user?.id || ''}
+                  />
                 </View>
               </View> 
 
@@ -374,6 +396,10 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.semiBold,
     color: COLORS.text,
     marginTop: SPACING.tiny,
+  },
+  headerActionsSection: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerStatusSection: {},
   statsCardContainer: {

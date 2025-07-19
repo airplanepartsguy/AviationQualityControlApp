@@ -28,6 +28,7 @@ import * as databaseService from '../services/databaseService';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import salesforceUploadService from '../services/salesforceUploadService';
+import pdfGenerationService from '../services/pdfGenerationService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -362,16 +363,28 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       setUploadStatus({ status: 'uploading', scannedId });
 
       console.log('[BatchPreview] Starting Salesforce upload for:', scannedId);
+      console.log(`[BatchPreview] Generating PDF from ${currentBatch.length} photos`);
       
       // Generate PDF from current batch photos
-      // For now, we'll create a simple base64 PDF
-      // In a real implementation, this would generate the actual PDF from photos
-      const testPdfBase64 = createTestPdfBase64(scannedId);
+      const pdfResult = await pdfGenerationService.generatePdfFromPhotos(
+        currentBatch,
+        scannedId,
+        {
+          title: `${scannedId} - Quality Control Photos`,
+          includeMetadata: true
+        }
+      );
+
+      if (!pdfResult.success) {
+        throw new Error(`PDF generation failed: ${pdfResult.error}`);
+      }
+
+      console.log(`[BatchPreview] PDF generated successfully with ${pdfResult.photoCount} photos`);
 
       const result = await salesforceUploadService.uploadPdfByScannedId(
         currentCompany!.id,
         scannedId,
-        testPdfBase64
+        pdfResult.pdfBase64!
       );
 
       if (result.success) {

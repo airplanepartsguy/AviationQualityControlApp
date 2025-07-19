@@ -1,4 +1,4 @@
-// Deploy updated Salesforce OAuth callback Edge Function
+ // Deploy updated Salesforce OAuth callback Edge Function
 const { exec } = require('child_process');
 const path = require('path');
 

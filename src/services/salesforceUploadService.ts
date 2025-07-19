@@ -3,7 +3,6 @@
  * Handles uploading merged PDFs to Salesforce records based on scanned IDs
  */
 
-import { salesforceOAuthService } from './salesforceOAuthService';
 import companyIntegrationsService from './companyIntegrationsService';
 import { salesforceObjectMappingService, ParsedDocumentId } from './salesforceObjectMappingService';
 
@@ -47,21 +46,15 @@ class SalesforceUploadService {
    */
   async getObjectInfoForPrefix(companyId: string, prefix: string): Promise<{ objectName: string; nameField: string }> {
     try {
-      // Get company's Salesforce configuration
-      const config = await companyIntegrationsService.getActiveSalesforceConfig(companyId);
-      if (!config) {
-        throw new Error('No active Salesforce configuration found for company');
-      }
-
-      // Look up the prefix in the mapping
-      const prefixMapping = config.prefix_mappings[prefix];
-      if (!prefixMapping) {
+      // Use the same object mapping service as the main upload flow
+      const mapping = await salesforceObjectMappingService.findMappingForPrefix(companyId, prefix);
+      if (!mapping) {
         throw new Error(`No Salesforce object mapping found for prefix: ${prefix}`);
       }
 
       return {
-        objectName: prefixMapping.object_name,
-        nameField: prefixMapping.name_field
+        objectName: mapping.salesforce_object,
+        nameField: mapping.name_field
       };
     } catch (error) {
       console.error('[SalesforceUpload] Error getting object info for prefix:', error);
@@ -81,23 +74,38 @@ class SalesforceUploadService {
     try {
       console.log(`[SalesforceUpload] Searching for record: ${recordName} in ${objectName}.${nameField}`);
 
-      // Get OAuth tokens
-      const tokens = await salesforceOAuthService.getStoredTokens(companyId);
-      if (!tokens) {
-        throw new Error('No Salesforce OAuth tokens found. Please authenticate first.');
+      // Get OAuth tokens from Supabase (same place OAuth flow stores them)
+      const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
+      if (!integration || integration.status !== 'active') {
+        throw new Error('No active Salesforce integration found. Please authenticate first.');
       }
+      
+      const config = integration.config;
+      if (!config || !config.access_token) {
+        throw new Error('No valid Salesforce OAuth tokens found. Please re-authenticate.');
+      }
+      
+      const tokens = {
+        access_token: config.access_token,
+        refresh_token: config.refresh_token,
+        instance_url: config.instance_url
+      };
 
-      // Get Salesforce configuration
-      const config = await companyIntegrationsService.getActiveSalesforceConfig(companyId);
-      if (!config) {
-        throw new Error('No active Salesforce configuration found');
-      }
+      // Config is already available from integration above
 
       // Build SOQL query
       const soqlQuery = `SELECT Id, ${nameField} FROM ${objectName} WHERE ${nameField} = '${recordName}' LIMIT 1`;
-      const queryUrl = `${config.instance_url}/services/data/v${config.api_version}/query/?q=${encodeURIComponent(soqlQuery)}`;
+      const apiVersion = config.api_version || 'v58.0';
+      // Ensure API version has 'v' prefix
+      const formattedApiVersion = apiVersion.startsWith('v') ? apiVersion : `v${apiVersion}`;
+      const queryUrl = `${config.instance_url}/services/data/${formattedApiVersion}/query/?q=${encodeURIComponent(soqlQuery)}`;
 
       console.log(`[SalesforceUpload] SOQL Query: ${soqlQuery}`);
+      console.log(`[SalesforceUpload] Query URL: ${queryUrl}`);
+      console.log(`[SalesforceUpload] Instance URL: ${config.instance_url}`);
+      console.log(`[SalesforceUpload] API Version: ${apiVersion}`);
+      console.log(`[SalesforceUpload] Object Name: ${objectName}`);
+      console.log(`[SalesforceUpload] Access Token (first 20 chars): ${tokens.access_token.substring(0, 20)}...`);
 
       // Execute query
       const response = await fetch(queryUrl, {
@@ -140,52 +148,130 @@ class SalesforceUploadService {
     recordId: string,
     pdfBase64: string,
     fileName: string
-  ): Promise<{ attachmentId: string }> {
+  ): Promise<{ attachmentId: string; contentVersionId?: string; contentDocumentLinkId?: string }> {
     try {
       console.log(`[SalesforceUpload] Uploading PDF ${fileName} to record ${recordId}`);
 
-      // Get OAuth tokens
-      const tokens = await salesforceOAuthService.getStoredTokens(companyId);
-      if (!tokens) {
-        throw new Error('No Salesforce OAuth tokens found. Please authenticate first.');
+      // Get OAuth tokens from Supabase (same place OAuth flow stores them)
+      const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
+      if (!integration || integration.status !== 'active') {
+        throw new Error('No active Salesforce integration found. Please authenticate first.');
       }
-
-      // Get Salesforce configuration
-      const config = await companyIntegrationsService.getActiveSalesforceConfig(companyId);
-      if (!config) {
-        throw new Error('No active Salesforce configuration found');
+      
+      const config = integration.config;
+      if (!config || !config.access_token) {
+        throw new Error('No valid Salesforce OAuth tokens found. Please re-authenticate.');
       }
-
-      // Create attachment record
-      const attachmentData = {
-        Name: fileName,
-        ParentId: recordId,
-        Body: pdfBase64,
-        ContentType: 'application/pdf'
+      
+      const tokens = {
+        access_token: config.access_token,
+        refresh_token: config.refresh_token,
+        instance_url: config.instance_url
       };
 
-      const createUrl = `${config.instance_url}/services/data/v${config.api_version}/sobjects/Attachment`;
+      // Config is already available from integration above
 
-      const response = await fetch(createUrl, {
+      // Ensure API version has 'v' prefix (same logic as query method)
+      const apiVersion = config.api_version || 'v58.0';
+      const formattedApiVersion = apiVersion.startsWith('v') ? apiVersion : `v${apiVersion}`;
+
+      // Step 1: Create ContentVersion (the file content)
+      const contentVersionData = {
+        Title: fileName.replace('.pdf', ''), // Remove extension for title
+        PathOnClient: fileName,
+        VersionData: pdfBase64,
+        ContentLocation: 'S' // Stored in Salesforce
+      };
+
+      const contentVersionUrl = `${config.instance_url}/services/data/${formattedApiVersion}/sobjects/ContentVersion`;
+      
+      console.log(`[SalesforceUpload] Creating ContentVersion at: ${contentVersionUrl}`);
+      console.log(`[SalesforceUpload] ContentVersion data:`, {
+        Title: contentVersionData.Title,
+        PathOnClient: contentVersionData.PathOnClient,
+        ContentLocation: contentVersionData.ContentLocation,
+        VersionDataLength: pdfBase64.length
+      });
+
+      const contentVersionResponse = await fetch(contentVersionUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${tokens.access_token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(attachmentData)
+        body: JSON.stringify(contentVersionData)
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Salesforce attachment upload failed: ${response.status} ${response.statusText} - ${errorText}`);
+      if (!contentVersionResponse.ok) {
+        const errorText = await contentVersionResponse.text();
+        throw new Error(`Salesforce ContentVersion creation failed: ${contentVersionResponse.status} ${contentVersionResponse.statusText} - ${errorText}`);
       }
 
-      const result = await response.json();
-      console.log(`[SalesforceUpload] PDF uploaded successfully. Attachment ID: ${result.id}`);
+      const contentVersionResult = await contentVersionResponse.json();
+      console.log(`[SalesforceUpload] ContentVersion created successfully. ID: ${contentVersionResult.id}`);
+
+      // Step 2: Get the ContentDocumentId from the ContentVersion
+      const queryUrl = `${config.instance_url}/services/data/${formattedApiVersion}/query/?q=SELECT%20ContentDocumentId%20FROM%20ContentVersion%20WHERE%20Id%20%3D%20'${contentVersionResult.id}'`;
+      
+      const queryResponse = await fetch(queryUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${tokens.access_token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!queryResponse.ok) {
+        const errorText = await queryResponse.text();
+        throw new Error(`Failed to get ContentDocumentId: ${queryResponse.status} ${queryResponse.statusText} - ${errorText}`);
+      }
+
+      const queryResult = await queryResponse.json();
+      const contentDocumentId = queryResult.records[0]?.ContentDocumentId;
+      
+      if (!contentDocumentId) {
+        throw new Error('Failed to retrieve ContentDocumentId from ContentVersion');
+      }
+
+      console.log(`[SalesforceUpload] ContentDocumentId: ${contentDocumentId}`);
+
+      // Step 3: Create ContentDocumentLink to associate file with record
+      const contentDocumentLinkData = {
+        ContentDocumentId: contentDocumentId,
+        LinkedEntityId: recordId,
+        ShareType: 'V', // Viewer permission
+        Visibility: 'AllUsers'
+      };
+
+      const contentDocumentLinkUrl = `${config.instance_url}/services/data/${formattedApiVersion}/sobjects/ContentDocumentLink`;
+      
+      console.log(`[SalesforceUpload] Creating ContentDocumentLink at: ${contentDocumentLinkUrl}`);
+      console.log(`[SalesforceUpload] ContentDocumentLink data:`, contentDocumentLinkData);
+
+      const linkResponse = await fetch(contentDocumentLinkUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tokens.access_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(contentDocumentLinkData)
+      });
+
+      if (!linkResponse.ok) {
+        const errorText = await linkResponse.text();
+        throw new Error(`Salesforce ContentDocumentLink creation failed: ${linkResponse.status} ${linkResponse.statusText} - ${errorText}`);
+      }
+
+      const linkResult = await linkResponse.json();
+      console.log(`[SalesforceUpload] ContentDocumentLink created successfully. ID: ${linkResult.id}`);
+      console.log(`[SalesforceUpload] PDF uploaded successfully as modern Salesforce File. ContentDocument ID: ${contentDocumentId}`);
 
       return {
-        attachmentId: result.id
+        attachmentId: contentDocumentId, // Return ContentDocument ID for modern files
+        contentVersionId: contentVersionResult.id,
+        contentDocumentLinkId: linkResult.id
       };
+
     } catch (error) {
       console.error('[SalesforceUpload] Error uploading PDF to record:', error);
       throw error;
@@ -229,14 +315,12 @@ class SalesforceUploadService {
         };
       }
 
-      const tokens = await salesforceOAuthService.getStoredTokens(companyId);
-      if (!tokens || !tokens.access_token) {
-        return {
-          success: false,
-          message: 'No valid Salesforce OAuth tokens found. Please re-authenticate.',
-          details: { tokenStatus: 'missing_or_invalid' }
-        };
-      }
+      // Tokens are already validated in the integration check above
+      const tokens = {
+        access_token: integration.config.access_token,
+        refresh_token: integration.config.refresh_token,
+        instance_url: integration.config.instance_url
+      };
 
       // Step 3: Search for record by name
       const record = await this.findRecordByName(

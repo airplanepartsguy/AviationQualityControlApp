@@ -42,15 +42,20 @@ class SalesforceOAuthService {
   
   /**
    * Generate a random code verifier for PKCE (43-128 characters)
+   * RFC 7636 compliant: [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
    */
   private generateCodeVerifier(): string {
-    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    // Use only RFC 7636 compliant characters (no periods to avoid issues)
+    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~';
     const length = 128; // Maximum length for better security
     let result = '';
     
     for (let i = 0; i < length; i++) {
       result += charset.charAt(Math.floor(Math.random() * charset.length));
     }
+    
+    console.log('[SalesforceOAuth] Generated code verifier length:', result.length);
+    console.log('[SalesforceOAuth] Code verifier (first 20 chars):', result.substring(0, 20) + '...');
     
     return result;
   }
@@ -92,25 +97,48 @@ class SalesforceOAuthService {
       // Remove padding and make URL-safe
       const urlSafeCodeChallenge = codeChallenge.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
       
-      // Store PKCE code verifier in database for Edge Function to retrieve
+      // Store PKCE code verifier in Supabase cloud database for Edge Function to retrieve
+      console.log('[SalesforceOAuth] Storing PKCE code verifier in Supabase cloud database...');
+      
       try {
-        const { error: storeError } = await supabaseService.supabase
+        // First, delete any existing oauth_state records for this company/integration
+        const { error: deleteError } = await supabaseService.supabase
           .from('oauth_state')
-          .upsert({
+          .delete()
+          .eq('company_id', companyId)
+          .eq('integration_type', 'salesforce');
+        
+        if (deleteError) {
+          console.warn('[SalesforceOAuth] Warning: Could not delete old oauth_state:', deleteError);
+        }
+        
+        // Now insert the new PKCE code verifier
+        const { data: insertData, error: storeError } = await supabaseService.supabase
+          .from('oauth_state')
+          .insert({
             company_id: companyId,
             integration_type: 'salesforce',
             code_verifier: codeVerifier,
             code_challenge: urlSafeCodeChallenge,
             expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
-          });
+          })
+          .select();
         
         if (storeError) {
-          throw storeError;
+          console.error('[SalesforceOAuth] CRITICAL: Failed to store PKCE code verifier in Supabase:', storeError);
+          throw new Error(`Failed to store PKCE code verifier: ${storeError.message}`);
         }
-        console.log('[SalesforceOAuth] PKCE code verifier stored in database');
-      } catch (storeError) {
-        console.error('[SalesforceOAuth] Failed to store PKCE code verifier:', storeError);
-        // Continue anyway - fallback to old method if needed
+        
+        console.log('[SalesforceOAuth] ✅ PKCE code verifier stored successfully in Supabase:', {
+          company_id: companyId,
+          integration_type: 'salesforce',
+          code_verifier_length: codeVerifier.length,
+          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+        });
+        
+      } catch (storeError: any) {
+        console.error('[SalesforceOAuth] CRITICAL ERROR: Cannot proceed without storing PKCE code verifier:', storeError);
+        throw new Error(`OAuth initialization failed: ${storeError?.message || 'Unknown error'}`);
       }
       
       const redirectUri = this.getRedirectUri();
@@ -186,7 +214,25 @@ class SalesforceOAuthService {
       }
       
       console.log('[SalesforceOAuth] Valid OAuth tokens found in config');
-      return { success: true };
+    
+    // Update integration status to active if tokens are valid
+    try {
+      await supabaseService.supabase
+        .from('company_integrations')
+        .update({ 
+          status: 'active',
+          last_sync_at: new Date().toISOString()
+        })
+        .eq('company_id', companyId)
+        .eq('integration_type', 'salesforce');
+      
+      console.log('[SalesforceOAuth] Integration status updated to active');
+    } catch (statusError) {
+      console.error('[SalesforceOAuth] Error updating integration status:', statusError);
+      // Don't fail the whole operation if status update fails
+    }
+    
+    return { success: true };
     } catch (error) {
       console.error('[SalesforceOAuth] Error checking tokens:', error);
       return { success: false, error: 'token_check_failed' };

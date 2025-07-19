@@ -384,13 +384,24 @@ class CompanyIntegrationsService {
    */
   private async getSalesforceTokens(companyId: string): Promise<{access_token: string, refresh_token?: string} | null> {
     try {
-      // Check if we have OAuth tokens stored in Expo SecureStore
-      // This is where the real OAuth tokens would be stored after successful authentication
-      const { salesforceOAuthService } = await import('./salesforceOAuthService');
+      // FIRST: Check if tokens are stored in Supabase database (Edge Function stores them there)
+      const integration = await this.getIntegration(companyId, 'salesforce');
+      if (integration && integration.config) {
+        const config = integration.config as any;
+        if (config.access_token) {
+          console.log('[CompanyIntegrations] Found OAuth tokens in database for company:', companyId);
+          return {
+            access_token: config.access_token,
+            refresh_token: config.refresh_token
+          };
+        }
+      }
       
-      // Try to get stored tokens for this company
+      // FALLBACK: Check if we have OAuth tokens stored in Expo SecureStore
+      const { salesforceOAuthService } = await import('./salesforceOAuthService');
       const tokens = await salesforceOAuthService.getStoredTokens(companyId);
       if (tokens && tokens.access_token) {
+        console.log('[CompanyIntegrations] Found OAuth tokens in SecureStore for company:', companyId);
         return tokens;
       }
       

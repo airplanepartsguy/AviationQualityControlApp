@@ -153,38 +153,94 @@ class SalesforceObjectMappingService {
   getDefaultMappings(): Omit<ObjectMapping, 'id' | 'company_id' | 'created_at' | 'updated_at'>[] {
     return [
       {
+        prefix: 'RLS',
+        salesforce_object: 'inscor__Release__c',
+        name_field: 'Name',
+        description: 'Releases',
+        is_active: true
+      },
+      {
+        prefix: 'RLSL',
+        salesforce_object: 'inscor__Release_Line__c',
+        name_field: 'Name',
+        description: 'Release Lines',
+        is_active: true
+      },
+      {
         prefix: 'PO',
-        salesforce_object: 'Purchase_Order__c',
+        salesforce_object: 'inscor__Purchase_Order__c',
         name_field: 'Name',
         description: 'Purchase Orders',
         is_active: true
       },
       {
-        prefix: 'INV',
-        salesforce_object: 'Invoice__c',
+        prefix: 'POL',
+        salesforce_object: 'inscor__Purchase_Order_Line__c',
         name_field: 'Name',
-        description: 'Invoices',
+        description: 'Purchase Order Lines',
         is_active: true
       },
       {
         prefix: 'SO',
-        salesforce_object: 'Sales_Order__c',
+        salesforce_object: 'inscor__Sales_Order__c',
         name_field: 'Name',
         description: 'Sales Orders',
         is_active: true
       },
       {
+        prefix: 'SOL',
+        salesforce_object: 'inscor__Sales_Order_Line__c',
+        name_field: 'Name',
+        description: 'Sales Order Lines',
+        is_active: true
+      },
+      {
+        prefix: 'INV',
+        salesforce_object: 'inscor__Inventory_Line__c',
+        name_field: 'Name',
+        description: 'Inventory Lines',
+        is_active: true
+      },
+      {
+        prefix: 'RO',
+        salesforce_object: 'inscor__Repair_Order__c',
+        name_field: 'Name',
+        description: 'Repair Orders',
+        is_active: true
+      },
+      {
+        prefix: 'ROL',
+        salesforce_object: 'inscor__Repair_Order_Line__c',
+        name_field: 'Name',
+        description: 'Repair Order Lines',
+        is_active: true
+      },
+      {
         prefix: 'WO',
-        salesforce_object: 'Work_Order__c',
+        salesforce_object: 'inscor__Work_Order__c',
         name_field: 'Name',
         description: 'Work Orders',
         is_active: true
       },
       {
-        prefix: 'QC',
-        salesforce_object: 'Quality_Control__c',
+        prefix: 'INVC',
+        salesforce_object: 'inscor__Invoice__c',
         name_field: 'Name',
-        description: 'Quality Control Records',
+        description: 'Invoices',
+        is_active: true
+      },
+      {
+        prefix: 'RMA',
+        salesforce_object: 'inscor__RMA__c',
+        name_field: 'Name',
+        description: 'RMAs',
+        is_active: true
+      },
+      {
+        prefix: 'INVCL',
+        salesforce_object: 'inscor__Invoice_Line__c',
+        name_field: 'Name',
+        description: 'Invoice Lines',
         is_active: true
       }
     ];

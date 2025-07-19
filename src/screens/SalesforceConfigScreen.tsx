@@ -476,7 +476,7 @@ const SalesforceConfigScreen: React.FC = () => {
         clientSecret: config.client_secret,
         instanceUrl: config.instance_url,
         redirectUri: 'https://luwlvmcixwdtuaffamgk.supabase.co/functions/v1/salesforce-oauth-callback',
-        sandbox: config.sandbox
+        sandbox: config.sandbox || false
       };
       
       // Initiate OAuth flow and capture the PKCE code verifier
@@ -487,7 +487,7 @@ const SalesforceConfigScreen: React.FC = () => {
       await SecureStore.setItemAsync(codeVerifierKey, codeChallenge);
       console.log('[SalesforceConfig] Stored PKCE code verifier in secure storage');
       
-      // Enhanced debugging for OAuth URL
+      // Log OAuth configuration for debugging
       console.log('[SalesforceConfig] === OAUTH DEBUG INFO ===');
       console.log('[SalesforceConfig] Company ID:', currentCompany!.id);
       console.log('[SalesforceConfig] OAuth Config:', {
@@ -498,17 +498,22 @@ const SalesforceConfigScreen: React.FC = () => {
         redirectUri: oauthConfig.redirectUri
       });
       console.log('[SalesforceConfig] Generated OAuth URL:', authUrl);
-      console.log('[SalesforceConfig] URL starts with login.salesforce.com?', authUrl.startsWith('https://login.salesforce.com'));
-      console.log('[SalesforceConfig] URL starts with test.salesforce.com?', authUrl.startsWith('https://test.salesforce.com'));
       console.log('[SalesforceConfig] === END DEBUG INFO ===');
       
-      // Show debug alert to user
+      // Show user-friendly authentication flow
       Alert.alert(
-        'Debug Info', 
-        `OAuth URL: ${authUrl.substring(0, 100)}...\n\nSandbox: ${oauthConfig.sandbox}\nClient ID: ${oauthConfig.clientId ? 'Present' : 'Missing'}`,
+        'Authenticate with Salesforce',
+        `You'll be redirected to Salesforce to sign in and authorize this app.\n\n${oauthConfig.sandbox ? 'Sandbox' : 'Production'} Environment`,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Continue', onPress: () => openBrowserWithUrl(authUrl) }
+          { 
+            text: 'Continue to Salesforce', 
+            onPress: () => {
+              openBrowserWithUrl(authUrl);
+              // Start checking for OAuth tokens after user initiates flow
+              checkOAuthTokens(currentCompany!.id);
+            }
+          }
         ]
       );
     } catch (error) {
@@ -610,17 +615,6 @@ const SalesforceConfigScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-        >
-          <Ionicons name="arrow-back" size={24} color={COLORS.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Salesforce Configuration</Text>
-        <View style={styles.headerRight} />
-      </View>
-
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {/* Debug Info */}
         <View style={styles.debugSection}>

@@ -55,20 +55,32 @@ serve(async (req) => {
           throw new Error('Missing Salesforce client credentials')
         }
         
-        // Try to get stored PKCE code verifier from oauth_callbacks table
-        // This is a fallback approach using existing table structure
-        const { data: callbackData } = await supabase
-          .from('oauth_callbacks')
+        // Get stored PKCE code verifier from oauth_state table
+        console.log('Querying oauth_state table for company_id:', state)
+        const { data: oauthState, error: stateError } = await supabase
+          .from('oauth_state')
           .select('*')
           .eq('company_id', state)
-          .eq('consumed', false)
+          .eq('integration_type', 'salesforce')
           .order('created_at', { ascending: false })
           .limit(1)
           .single()
         
-        // For now, use empty code verifier as fallback
-        // The PKCE code verifier should be retrieved from the app's SecureStore
-        const codeVerifier = ''
+        console.log('OAuth state query result:', { oauthState, stateError })
+        
+        if (stateError || !oauthState) {
+          console.error('Failed to retrieve PKCE code verifier:', stateError)
+          throw new Error('PKCE code verifier not found. Please try the OAuth flow again.')
+        }
+        
+        const codeVerifier = oauthState.code_verifier
+        if (!codeVerifier) {
+          console.error('Code verifier is empty in oauth_state:', oauthState)
+          throw new Error('PKCE code verifier is empty. Please try the OAuth flow again.')
+        }
+        
+        console.log('Retrieved PKCE code verifier successfully, length:', codeVerifier.length)
+        console.log('Code verifier (first 20 chars):', codeVerifier.substring(0, 20) + '...')
         
         // Exchange authorization code for tokens
         const baseUrl = config.sandbox ? 'https://test.salesforce.com' : 'https://login.salesforce.com'
@@ -157,75 +169,92 @@ serve(async (req) => {
       }
     }
 
-    // Create a user-friendly success/error page
+    // Return simple HTML pages that work on mobile browsers
+    // Keep the existing polling approach - it's simpler and more reliable
+    
     let htmlContent = ''
     
     if (tokenExchangeSuccess) {
-      htmlContent = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Salesforce Connected Successfully</title>
-          <style>
-            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
-            .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .success { color: #28a745; font-size: 24px; margin-bottom: 20px; }
-            .instructions { color: #666; line-height: 1.6; }
-            .close-btn { background: #007bff; color: white; border: none; padding: 12px 24px; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 20px; }
-            .close-btn:hover { background: #0056b3; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="success">✅ Salesforce Connected Successfully!</div>
-            <div class="instructions">
-              <p>Your Salesforce account has been connected to the Aviation Quality Control App.</p>
-              <p><strong>Integration is now active and ready to use.</strong></p>
-              <p>You can now close this browser window and return to the app.</p>
-            </div>
-            <button class="close-btn" onclick="window.close()">Close Window</button>
-          </div>
-        </body>
-        </html>
-      `
+      console.log('OAuth success - returning HTML success page')
+      htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Success</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background: #f0f8ff; }
+    .container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .success { color: #28a745; font-size: 20px; margin-bottom: 15px; }
+    .message { color: #333; line-height: 1.5; }
+    .close-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; font-size: 14px; cursor: pointer; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="success">✅ Connected Successfully!</div>
+    <div class="message">
+      <p>Salesforce has been connected to your Aviation Quality Control App.</p>
+      <p><strong>You can now close this window and return to the app.</strong></p>
+    </div>
+    <button class="close-btn" onclick="window.close()">Close Window</button>
+  </div>
+</body>
+</html>`
     } else if (error || tokenExchangeError) {
-      htmlContent = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Salesforce Connection Error</title>
-          <style>
-            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
-            .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .error { color: #dc3545; font-size: 24px; margin-bottom: 20px; }
-            .instructions { color: #666; line-height: 1.6; }
-            .close-btn { background: #6c757d; color: white; border: none; padding: 12px 24px; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 20px; }
-            .close-btn:hover { background: #545b62; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="error">❌ Connection Failed</div>
-            <div class="instructions">
-              <p><strong>Error:</strong> ${error || tokenExchangeError}</p>
-              ${errorDescription ? `<p><strong>Details:</strong> ${errorDescription}</p>` : ''}
-              ${tokenExchangeError ? `<p><strong>Token Exchange Error:</strong> ${tokenExchangeError}</p>` : ''}
-              <p>Please close this window and try connecting again from the app.</p>
-            </div>
-            <button class="close-btn" onclick="window.close()">Close Window</button>
-          </div>
-        </body>
-        </html>
-      `
+      console.log('OAuth error - returning HTML error page')
+      const errorMsg = error || tokenExchangeError || 'Unknown error'
+      htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Connection Error</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background: #fff5f5; }
+    .container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .error { color: #dc3545; font-size: 20px; margin-bottom: 15px; }
+    .message { color: #333; line-height: 1.5; }
+    .close-btn { background: #6c757d; color: white; border: none; padding: 10px 20px; border-radius: 4px; font-size: 14px; cursor: pointer; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="error">❌ Connection Failed</div>
+    <div class="message">
+      <p><strong>Error:</strong> ${errorMsg}</p>
+      <p>Please close this window and try connecting again from the app.</p>
+    </div>
+    <button class="close-btn" onclick="window.close()">Close Window</button>
+  </div>
+</body>
+</html>`
+    } else {
+      console.log('Unexpected OAuth callback state')
+      htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OAuth Callback</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background: #f8f9fa; }
+    .container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .message { color: #333; line-height: 1.5; }
+    .close-btn { background: #6c757d; color: white; border: none; padding: 10px 20px; border-radius: 4px; font-size: 14px; cursor: pointer; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="message">
+      <p>OAuth callback received. Please return to the app.</p>
+    </div>
+    <button class="close-btn" onclick="window.close()">Close Window</button>
+  </div>
+</body>
+</html>`
     }
 
-    console.log('Returning HTML success page')
-
-    // Return the HTML page with proper headers
     return new Response(htmlContent, {
       status: 200,
       headers: {
@@ -233,8 +262,6 @@ serve(async (req) => {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
-        'X-Content-Type-Options': 'nosniff',
-        'X-Frame-Options': 'DENY',
         ...corsHeaders
       }
     })

@@ -56,6 +56,84 @@ const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void
 };
 
 /**
+ * Initialize OAuth tables for Salesforce and other OAuth integrations
+ */
+const initializeOAuthTables = async (): Promise<void> => {
+  const db = await openDatabase();
+  
+  try {
+    // Create oauth_state table for PKCE code verifiers and OAuth state
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS oauth_state (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        integration_type TEXT NOT NULL,
+        state_value TEXT NOT NULL,
+        code_verifier TEXT,
+        code_challenge TEXT,
+        code_challenge_method TEXT DEFAULT 'S256',
+        redirect_uri TEXT,
+        scope TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    
+    // Create indexes for performance
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_oauth_state_company_integration 
+      ON oauth_state(company_id, integration_type);
+      
+      CREATE INDEX IF NOT EXISTS idx_oauth_state_expires 
+      ON oauth_state(expires_at);
+      
+      CREATE INDEX IF NOT EXISTS idx_oauth_state_value 
+      ON oauth_state(state_value);
+    `);
+    
+    // Create oauth_callbacks table for storing callback results
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS oauth_callbacks (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        integration_type TEXT NOT NULL,
+        state_value TEXT NOT NULL,
+        authorization_code TEXT,
+        access_token TEXT,
+        refresh_token TEXT,
+        token_type TEXT,
+        expires_in INTEGER,
+        scope TEXT,
+        instance_url TEXT,
+        status TEXT DEFAULT 'pending',
+        error_code TEXT,
+        error_description TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    
+    // Create indexes for oauth_callbacks
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_oauth_callbacks_company_integration 
+      ON oauth_callbacks(company_id, integration_type);
+      
+      CREATE INDEX IF NOT EXISTS idx_oauth_callbacks_state 
+      ON oauth_callbacks(state_value);
+      
+      CREATE INDEX IF NOT EXISTS idx_oauth_callbacks_status 
+      ON oauth_callbacks(status);
+    `);
+    
+    console.log('[databaseService] OAuth tables created successfully');
+  } catch (error) {
+    console.error('[databaseService] Error creating OAuth tables:', error);
+    throw error;
+  }
+};
+
+/**
  * Initialize additional services after core database is ready
  * This prevents circular dependency issues
  */
@@ -76,6 +154,14 @@ const initializeAdditionalServices = async (): Promise<void> => {
     // Initialize batch management
     const { initializeBatchManagementTables } = await import('./batchManagementService');
     await initializeBatchManagementTables();
+    
+    // Initialize OAuth tables
+    try {
+      await initializeOAuthTables();
+      console.log('[databaseService] OAuth tables initialized successfully');
+    } catch (oauthError) {
+      console.error('[databaseService] OAuth table initialization failed:', oauthError);
+    }
     
     // Initialize SharePoint service
     try {
