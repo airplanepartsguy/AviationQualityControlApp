@@ -74,7 +74,7 @@ class SalesforceUploadService {
     try {
       console.log(`[SalesforceUpload] Searching for record: ${recordName} in ${objectName}.${nameField}`);
 
-      // Get OAuth tokens from Supabase (same place OAuth flow stores them)
+      // Get integration configuration
       const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
       if (!integration || integration.status !== 'active') {
         throw new Error('No active Salesforce integration found. Please authenticate first.');
@@ -84,14 +84,6 @@ class SalesforceUploadService {
       if (!config || !config.access_token) {
         throw new Error('No valid Salesforce OAuth tokens found. Please re-authenticate.');
       }
-      
-      const tokens = {
-        access_token: config.access_token,
-        refresh_token: config.refresh_token,
-        instance_url: config.instance_url
-      };
-
-      // Config is already available from integration above
 
       // Build SOQL query
       const soqlQuery = `SELECT Id, ${nameField} FROM ${objectName} WHERE ${nameField} = '${recordName}' LIMIT 1`;
@@ -105,15 +97,10 @@ class SalesforceUploadService {
       console.log(`[SalesforceUpload] Instance URL: ${config.instance_url}`);
       console.log(`[SalesforceUpload] API Version: ${apiVersion}`);
       console.log(`[SalesforceUpload] Object Name: ${objectName}`);
-      console.log(`[SalesforceUpload] Access Token (first 20 chars): ${tokens.access_token.substring(0, 20)}...`);
 
-      // Execute query
-      const response = await fetch(queryUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${tokens.access_token}`,
-          'Content-Type': 'application/json'
-        }
+      // Execute query with automatic token refresh
+      const response = await this.makeAuthenticatedRequest(companyId, queryUrl, {
+        method: 'GET'
       });
 
       if (!response.ok) {
@@ -152,7 +139,7 @@ class SalesforceUploadService {
     try {
       console.log(`[SalesforceUpload] Uploading PDF ${fileName} to record ${recordId}`);
 
-      // Get OAuth tokens from Supabase (same place OAuth flow stores them)
+      // Get integration configuration
       const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
       if (!integration || integration.status !== 'active') {
         throw new Error('No active Salesforce integration found. Please authenticate first.');
@@ -162,16 +149,8 @@ class SalesforceUploadService {
       if (!config || !config.access_token) {
         throw new Error('No valid Salesforce OAuth tokens found. Please re-authenticate.');
       }
-      
-      const tokens = {
-        access_token: config.access_token,
-        refresh_token: config.refresh_token,
-        instance_url: config.instance_url
-      };
 
-      // Config is already available from integration above
-
-      // Ensure API version has 'v' prefix (same logic as query method)
+      // Ensure API version has 'v' prefix
       const apiVersion = config.api_version || 'v58.0';
       const formattedApiVersion = apiVersion.startsWith('v') ? apiVersion : `v${apiVersion}`;
 
@@ -193,12 +172,9 @@ class SalesforceUploadService {
         VersionDataLength: pdfBase64.length
       });
 
-      const contentVersionResponse = await fetch(contentVersionUrl, {
+      // Use authenticated request with automatic token refresh
+      const contentVersionResponse = await this.makeAuthenticatedRequest(companyId, contentVersionUrl, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${tokens.access_token}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify(contentVersionData)
       });
 
@@ -213,12 +189,9 @@ class SalesforceUploadService {
       // Step 2: Get the ContentDocumentId from the ContentVersion
       const queryUrl = `${config.instance_url}/services/data/${formattedApiVersion}/query/?q=SELECT%20ContentDocumentId%20FROM%20ContentVersion%20WHERE%20Id%20%3D%20'${contentVersionResult.id}'`;
       
-      const queryResponse = await fetch(queryUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${tokens.access_token}`,
-          'Content-Type': 'application/json'
-        }
+      // Use authenticated request with automatic token refresh
+      const queryResponse = await this.makeAuthenticatedRequest(companyId, queryUrl, {
+        method: 'GET'
       });
 
       if (!queryResponse.ok) {
@@ -248,12 +221,9 @@ class SalesforceUploadService {
       console.log(`[SalesforceUpload] Creating ContentDocumentLink at: ${contentDocumentLinkUrl}`);
       console.log(`[SalesforceUpload] ContentDocumentLink data:`, contentDocumentLinkData);
 
-      const linkResponse = await fetch(contentDocumentLinkUrl, {
+      // Use authenticated request with automatic token refresh
+      const linkResponse = await this.makeAuthenticatedRequest(companyId, contentDocumentLinkUrl, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${tokens.access_token}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify(contentDocumentLinkData)
       });
 
@@ -437,6 +407,100 @@ class SalesforceUploadService {
           testMode: true
         }
       };
+    }
+  }
+
+  /**
+   * Make authenticated Salesforce API request with automatic token refresh
+   */
+  private async makeAuthenticatedRequest(
+    companyId: string,
+    url: string,
+    options: RequestInit = {}
+  ): Promise<Response> {
+    console.log(`[SalesforceUpload] Making authenticated request to: ${url}`);
+    
+    // Get current tokens
+    let tokens = await this.getValidTokens(companyId);
+    if (!tokens) {
+      throw new Error('No valid Salesforce OAuth tokens found. Please re-authenticate.');
+    }
+
+    // Add authorization header
+    const headers = {
+      'Authorization': `Bearer ${tokens.access_token}`,
+      'Content-Type': 'application/json',
+      ...options.headers
+    };
+
+    // Make initial request
+    let response = await fetch(url, {
+      ...options,
+      headers
+    });
+
+    // If 401 (unauthorized/expired token), try to refresh and retry
+    if (response.status === 401) {
+      console.log('[SalesforceUpload] Received 401 error, attempting token refresh...');
+      
+      try {
+        // Try to refresh the token
+        const { salesforceOAuthService } = await import('./salesforceOAuthService');
+        const refreshedTokens = await salesforceOAuthService.refreshAccessToken(companyId, tokens.refresh_token);
+        
+        if (refreshedTokens?.access_token) {
+          console.log('[SalesforceUpload] Token refreshed successfully, retrying request...');
+          
+          // Retry the request with new token
+          const refreshedHeaders = {
+            ...headers,
+            'Authorization': `Bearer ${refreshedTokens.access_token}`
+          };
+          
+          response = await fetch(url, {
+            ...options,
+            headers: refreshedHeaders
+          });
+          
+          if (response.status === 401) {
+            throw new Error('Authentication failed even after token refresh. Please re-authenticate with Salesforce.');
+          }
+        } else {
+          throw new Error('Token refresh failed. Please re-authenticate with Salesforce.');
+        }
+      } catch (refreshError) {
+        console.error('[SalesforceUpload] Token refresh error:', refreshError);
+        throw new Error('Session expired and token refresh failed. Please re-authenticate with Salesforce.');
+      }
+    }
+
+    return response;
+  }
+
+  /**
+   * Get valid OAuth tokens for the company
+   */
+  private async getValidTokens(companyId: string): Promise<{access_token: string, refresh_token: string, instance_url: string} | null> {
+    try {
+      // Get OAuth tokens from Supabase (same place OAuth flow stores them)
+      const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
+      if (!integration || integration.status !== 'active') {
+        return null;
+      }
+      
+      const config = integration.config;
+      if (!config || !config.access_token) {
+        return null;
+      }
+      
+      return {
+        access_token: config.access_token,
+        refresh_token: config.refresh_token,
+        instance_url: config.instance_url
+      };
+    } catch (error) {
+      console.error('[SalesforceUpload] Error getting tokens:', error);
+      return null;
     }
   }
 }

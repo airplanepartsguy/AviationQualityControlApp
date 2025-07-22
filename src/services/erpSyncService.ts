@@ -5,7 +5,7 @@
 
 import * as databaseService from './databaseService';
 import salesforceUploadService from './salesforceUploadService';
-import pdfGenerationService from './pdfGenerationService';
+import { pdfGenerationService } from './pdfGenerationService';
 import { PhotoData } from '../types/data';
 import { logAnalyticsEvent, logErrorToFile } from './analyticsService';
 
@@ -38,13 +38,13 @@ export interface BulkSyncResult {
   duration: number;
 }
 
-class ErpSyncService {
+export class ErpSyncService {
   /**
-   * Initialize ERP sync tables
+   * Initialize sync status tables
    */
   async initializeSyncTables(): Promise<void> {
     try {
-      const db = await databaseService.getDatabase();
+      const db = await databaseService.openDatabase();
       
       // Create ERP sync status table
       await db.execAsync(`
@@ -59,18 +59,13 @@ class ErpSyncService {
           record_id TEXT,
           retry_count INTEGER DEFAULT 0,
           last_sync_attempt TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(batch_id, erp_system)
-        );
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (batch_id) REFERENCES batches (id)
+        )
       `);
 
-      // Create index for faster queries
-      await db.execAsync(`
-        CREATE INDEX IF NOT EXISTS idx_erp_sync_batch_id ON erp_sync_status(batch_id);
-      `);
-
-      console.log('[ErpSync] ERP sync tables initialized successfully');
+      console.log('[ErpSync] Sync status tables initialized');
     } catch (error) {
       console.error('[ErpSync] Failed to initialize sync tables:', error);
       throw error;
@@ -82,7 +77,7 @@ class ErpSyncService {
    */
   async getBatchSyncStatus(batchId: string, erpSystem: string): Promise<ErpSyncStatus | null> {
     try {
-      const db = await databaseService.getDatabase();
+      const db = await databaseService.openDatabase();
       const result = await db.getFirstAsync(
         'SELECT * FROM erp_sync_status WHERE batch_id = ? AND erp_system = ?',
         [batchId, erpSystem]
@@ -122,7 +117,7 @@ class ErpSyncService {
     } = {}
   ): Promise<void> {
     try {
-      const db = await databaseService.getDatabase();
+      const db = await databaseService.openDatabase();
       const now = new Date().toISOString();
 
       const syncedAt = status === 'synced' ? now : null;
@@ -154,7 +149,7 @@ class ErpSyncService {
    */
   async getBatchesWithSyncStatus(userId: string, erpSystem: string = 'salesforce'): Promise<any[]> {
     try {
-      const db = await databaseService.getDatabase();
+      const db = await databaseService.openDatabase();
       const result = await db.getAllAsync(`
         SELECT 
           pb.*,
@@ -377,7 +372,7 @@ class ErpSyncService {
    */
   private async getBatchDetails(batchId: string): Promise<{ photos: PhotoData[]; referenceId: string } | null> {
     try {
-      const db = await databaseService.getDatabase();
+      const db = await databaseService.openDatabase();
       
       // Get batch info
       const batch = await db.getFirstAsync(

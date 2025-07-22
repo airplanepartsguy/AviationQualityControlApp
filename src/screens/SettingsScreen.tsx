@@ -22,9 +22,9 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, CARD_STYLES } from '../
 import { RootStackParamList } from '../types/navigation';
 import networkService from '../services/networkService';
 import * as databaseService from '../services/databaseService';
-import licensingService from '../services/licensingService';
 import dataResetService from '../services/dataResetService';
 import userProfileService from '../services/userProfileService';
+import { supabase } from '../lib/supabaseClient';
 
 type SettingsScreenNavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -46,8 +46,8 @@ interface UserProfile {
   company?: string;
   role?: string;
   licenseType?: string;
-  deviceCount?: number;
-  maxDevices?: number;
+  licensesAssigned?: number;
+  maxLicenses?: number;
 }
 
 const SettingsScreen: React.FC = () => {
@@ -73,20 +73,197 @@ const SettingsScreen: React.FC = () => {
   const [editingProfile, setEditingProfile] = useState({ name: '', company: '' });
   const [storageInfo, setStorageInfo] = useState({ localPhotos: 0, localBatches: 0, storageSize: '0 MB' });
 
+  // Single initialization effect with robust error handling
   useEffect(() => {
-    loadSettings();
-    loadUserProfile();
-    loadStorageInfo();
-  }, []);
+    if (!user?.id) {
+      setIsLoading(false);
+      return;
+    }
 
-  const loadSettings = async () => {
+    let mounted = true;
+    const initializeData = async () => {
+      try {
+        console.log('[SettingsScreen] Starting initialization...');
+        
+        // Run all operations in parallel with individual error handling
+        const [settingsResult, profileResult, storageResult] = await Promise.allSettled([
+          loadSettingsWithFallback(),
+          loadUserProfileWithFallback(user.id),
+          loadStorageInfoWithFallback(user.id)
+        ]);
+
+        if (mounted) {
+          console.log('[SettingsScreen] Initialization results:', {
+            settings: settingsResult.status,
+            profile: profileResult.status, 
+            storage: storageResult.status
+          });
+          setIsLoading(false);
+        }
+      } catch (error) {
+        console.error('[SettingsScreen] Initialization failed:', error);
+        if (mounted) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    // Add maximum timeout as a safety net
+    const timeout = setTimeout(() => {
+      if (mounted && isLoading) {
+        console.warn('[SettingsScreen] Force completing initialization due to timeout');
+        setIsLoading(false);
+      }
+    }, 8000);
+
+    initializeData();
+
+    return () => {
+      mounted = false;
+      clearTimeout(timeout);
+    };
+  }, [user?.id]);
+
+  const loadSettingsWithFallback = async () => {
     try {
       const savedSettings = await AsyncStorage.getItem('appSettings');
       if (savedSettings) {
-        setSettings({ ...settings, ...JSON.parse(savedSettings) });
+        setSettings(prev => ({ ...prev, ...JSON.parse(savedSettings) }));
       }
     } catch (error) {
-      console.error('Error loading settings:', error);
+      console.warn('[SettingsScreen] Settings load failed, using defaults:', error);
+    }
+  };
+
+  const loadUserProfileWithFallback = async (userId: string) => {
+    try {
+      console.log('[SettingsScreen] Loading profile for:', userId);
+      
+      // Create safe fallback profile first
+      const fallbackProfile: UserProfile = {
+        id: userId,
+        email: user?.email || 'N/A',
+        name: user?.user_metadata?.name || 'User',
+        company: 'Loading...',
+        role: 'member',
+        licenseType: 'trial',
+        licensesAssigned: 1,
+        maxLicenses: 1
+      };
+      
+      setUserProfile(fallbackProfile);
+      setEditingProfile({
+        name: fallbackProfile.name || '',
+        company: fallbackProfile.company || ''
+      });
+
+      // Try to load actual profile data
+      try {
+        console.log(`[SettingsScreen] fetchUserProfile: Starting profile fetch for user ${userId}`);
+        
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select(`
+            id, email, full_name, role, company_id,
+            companies:company_id (
+              id, name
+            )
+          `)
+          .eq('id', userId)
+          .maybeSingle();
+
+        console.log(`[SettingsScreen] fetchUserProfile: Profile query result:`, { profile, error: profileError });
+
+        if (!profileError && profile) {
+          console.log(`[SettingsScreen] fetchUserProfile: Profile data found:`, profile);
+          
+          // Get license data separately for the company
+          let licenseData = null;
+          if (profile.company_id) {
+            console.log(`[SettingsScreen] fetchUserProfile: Fetching license for company ${profile.company_id}`);
+            
+            const { data: license, error: licenseError } = await supabase
+              .from('licenses')
+              .select('type, licenses_available')
+              .eq('company_id', profile.company_id)
+              .maybeSingle();
+            
+            console.log(`[SettingsScreen] fetchUserProfile: License query result:`, { license, error: licenseError });
+            
+            if (!licenseError && license) {
+              licenseData = license;
+            }
+          } else {
+            console.log(`[SettingsScreen] fetchUserProfile: No company_id found in profile`);
+          }
+
+          // Get count of users assigned to this company
+          let licensesAssigned = 1;
+          if (profile.company_id) {
+            console.log(`[SettingsScreen] fetchUserProfile: Counting users for company ${profile.company_id}`);
+            
+            const { count: userCount, error: userCountError } = await supabase
+              .from('profiles')
+              .select('id', { count: 'exact' })
+              .eq('company_id', profile.company_id);
+            
+            console.log(`[SettingsScreen] fetchUserProfile: User count query result:`, { userCount, error: userCountError });
+            
+            if (!userCountError && userCount !== null) {
+              licensesAssigned = userCount;
+            }
+          }
+
+          const updatedProfile: UserProfile = {
+            id: userId,
+            email: profile.email || user?.email || 'N/A',
+            name: profile.full_name || user?.user_metadata?.name || 'User',
+            company: (profile.companies as any)?.name || 'No Company',
+            role: profile.role || 'member',
+            licenseType: licenseData?.type || 'trial',
+            licensesAssigned: licensesAssigned,
+            maxLicenses: licenseData?.licenses_available || 1
+          };
+          
+          console.log(`[SettingsScreen] fetchUserProfile: Final profile constructed:`, updatedProfile);
+          
+          setUserProfile(updatedProfile);
+          setEditingProfile({
+            name: updatedProfile.name || '',
+            company: updatedProfile.company || ''
+          });
+          
+          console.log('[SettingsScreen] Profile loaded successfully');
+        }
+      } catch (profileError) {
+        console.warn('[SettingsScreen] Profile data load failed, using fallback:', profileError);
+      }
+    } catch (error) {
+      console.warn('[SettingsScreen] Profile loading failed:', error);
+    }
+  };
+
+  const loadStorageInfoWithFallback = async (userId: string) => {
+    try {
+      console.log('[SettingsScreen] Loading storage info...');
+      
+      // Get batch count and estimate storage
+      const batches = await databaseService.getAllPhotoBatchesForUser(userId);
+      const totalPhotos = batches.reduce((sum, batch) => sum + (batch.photoCount || 0), 0);
+      
+      setStorageInfo({
+        localPhotos: totalPhotos,
+        localBatches: batches.length,
+        storageSize: `${Math.round(totalPhotos * 2.5)} MB`
+      });
+      
+      console.log('[SettingsScreen] Storage info loaded:', { 
+        photos: totalPhotos, 
+        batches: batches.length 
+      });
+    } catch (error) {
+      console.warn('[SettingsScreen] Storage info load failed:', error);
+      setStorageInfo({ localPhotos: 0, localBatches: 0, storageSize: '0 MB' });
     }
   };
 
@@ -100,89 +277,6 @@ const SettingsScreen: React.FC = () => {
     }
   };
 
-  const loadUserProfile = async () => {
-    if (!user) return;
-    
-    try {
-      // Fetch real profile data from Supabase
-      const { fetchUserProfile } = await import('../services/supabaseService');
-      const licensingService = await import('../services/licensingService');
-      
-      const profileData = await fetchUserProfile(user.id);
-      
-      // Get real device count and license info from licensing service
-      const licenseInfo = await licensingService.default.getUserLicense(user.id);
-      const deviceCount = await licensingService.default.getActiveDeviceCount(user.id);
-      
-      if (profileData) {
-        // Get license data separately if license_id exists
-        let licenseData = null;
-        if (profileData.license_id) {
-          try {
-            const { fetchUserLicense } = await import('../services/supabaseService');
-            licenseData = await fetchUserLicense(profileData.license_id);
-          } catch (error) {
-            console.error('Error fetching license data:', error);
-          }
-        }
-        
-        setUserProfile({
-          id: user.id,
-          email: profileData.email || user.email || 'N/A',
-          name: profileData.full_name || user.user_metadata?.name || 'User',
-          company: profileData.companies?.name || 'Unknown Company',
-          role: profileData.role || 'member',
-          licenseType: licenseData?.type || 'trial',
-          deviceCount: deviceCount || 1,
-          maxDevices: licenseData?.licenses_available || 1
-        });
-        
-        // Update editing state with current values
-        setEditingProfile({
-          name: profileData.full_name || user.user_metadata?.name || 'User',
-          company: profileData.companies?.name || 'Unknown Company'
-        });
-      } else {
-        // Create minimal fallback profile when no Supabase data exists
-        const fallbackProfile = {
-          id: user.id,
-          email: user.email || 'N/A',
-          name: user.user_metadata?.name || 'User',
-          company: 'No Company Assigned',
-          role: 'member',
-          licenseType: 'trial',
-          deviceCount: 1,
-          maxDevices: 1
-        };
-        setUserProfile(fallbackProfile);
-        setEditingProfile({
-          name: fallbackProfile.name,
-          company: fallbackProfile.company
-        });
-      }
-    } catch (error) {
-      console.error('Error loading user profile:', error);
-      // Set minimal fallback profile on error
-      const fallbackProfile = {
-        id: user.id,
-        email: user.email || 'N/A',
-        name: user.user_metadata?.name || 'User',
-        company: 'Error Loading Company',
-        role: 'member',
-        licenseType: 'trial',
-        deviceCount: 1,
-        maxDevices: 1
-      };
-      setUserProfile(fallbackProfile);
-      setEditingProfile({
-        name: fallbackProfile.name,
-        company: fallbackProfile.company
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleSaveProfile = async () => {
     if (!user) return;
     
@@ -190,14 +284,19 @@ const SettingsScreen: React.FC = () => {
       setIsLoading(true);
       
       // Update profile in Supabase
-      const { updateUserProfile } = await import('../services/supabaseService');
       const updates = {
         full_name: editingProfile.name,
-        company: editingProfile.company,
         updated_at: new Date().toISOString()
       };
       
-      await updateUserProfile(user.id, updates);
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', user.id);
+      
+      if (error) {
+        throw error;
+      }
       
       // Update local state
       if (userProfile) {
@@ -208,7 +307,7 @@ const SettingsScreen: React.FC = () => {
         });
       }
       
-      // Update profile using userProfileService
+      // Try to update using userProfileService (optional)
       try {
         const success = await userProfileService.updateUserProfile({
           name: editingProfile.name,
@@ -216,11 +315,10 @@ const SettingsScreen: React.FC = () => {
         });
         
         if (!success) {
-          console.log('Profile update failed, continuing with local update only');
+          console.log('Profile sync service update failed, but Supabase update succeeded');
         }
-      } catch (error) {
-        console.log('Profile sync service not available:', error);
-        // Continue without sync - offline functionality
+      } catch (syncError) {
+        console.log('Profile sync service not available, but Supabase update succeeded:', syncError);
       }
       
       setShowProfileModal(false);
@@ -231,24 +329,6 @@ const SettingsScreen: React.FC = () => {
       Alert.alert('Error', 'Failed to update profile. Please try again.');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const loadStorageInfo = async () => {
-    if (!user?.id) return;
-    
-    try {
-      const batches = await databaseService.getAllPhotoBatchesForUser(user.id);
-      // Calculate total photos from batches
-      const totalPhotos = batches.reduce((sum, batch) => sum + batch.photoCount, 0);
-      
-      setStorageInfo({
-        localPhotos: totalPhotos,
-        localBatches: batches.length,
-        storageSize: `${Math.round(totalPhotos * 2.5)} MB` // Rough estimate
-      });
-    } catch (error) {
-      console.error('Error loading storage info:', error);
     }
   };
 
@@ -285,8 +365,13 @@ const SettingsScreen: React.FC = () => {
             try {
               // Clear cache logic would go here
               Alert.alert('Success', 'Cache cleared successfully');
-              loadStorageInfo();
+              
+              // Reload storage info
+              if (user?.id) {
+                await loadStorageInfoWithFallback(user.id);
+              }
             } catch (error) {
+              console.error('Error clearing cache:', error);
               Alert.alert('Error', 'Failed to clear cache');
             }
           }
@@ -449,8 +534,8 @@ const SettingsScreen: React.FC = () => {
                 <Text style={styles.licenseValue}>{userProfile?.licenseType}</Text>
               </View>
               <View style={styles.licenseItem}>
-                <Text style={styles.licenseLabel}>Devices</Text>
-                <Text style={styles.licenseValue}>{userProfile?.deviceCount}/{userProfile?.maxDevices}</Text>
+                <Text style={styles.licenseLabel}>Licenses</Text>
+                <Text style={styles.licenseValue}>{userProfile?.licensesAssigned}/{userProfile?.maxLicenses}</Text>
               </View>
             </View>
           </View>

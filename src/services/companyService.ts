@@ -322,11 +322,14 @@ export const getUserCompanies = async (userId: string): Promise<Company[]> => {
     }
     
     // First, try to get user's profile to check for company_id
+    console.log('[CompanyService] getUserCompanies: Fetching user profile from Supabase...');
     const profileResponse = await supabase
       .from('profiles')
       .select('company_id, full_name, email')
       .eq('id', userId)
       .single();
+    
+    console.log('[CompanyService] getUserCompanies: Profile response:', profileResponse);
     
     // Check if response exists and handle errors
     if (!profileResponse || profileResponse.error) {
@@ -335,18 +338,24 @@ export const getUserCompanies = async (userId: string): Promise<Company[]> => {
     }
     
     const profileData = profileResponse.data;
+    console.log('[CompanyService] getUserCompanies: Profile data:', profileData);
     
     // If user has a company_id, try to get the company details
     if (profileData?.company_id) {
+      console.log('[CompanyService] getUserCompanies: Found company_id in profile:', profileData.company_id);
+      
       const companyResponse = await supabase
         .from('companies')
         .select('*')
         .eq('id', profileData.company_id)
         .single();
       
+      console.log('[CompanyService] getUserCompanies: Company response:', companyResponse);
+      
       // Check if company response exists and is valid
       if (companyResponse && !companyResponse.error && companyResponse.data) {
         const companyData = companyResponse.data;
+        console.log('[CompanyService] getUserCompanies: Company data found:', companyData);
         
         const company: Company = {
           id: companyData.id || `temp_${userId}`,
@@ -370,6 +379,8 @@ export const getUserCompanies = async (userId: string): Promise<Company[]> => {
       } else {
         console.warn('[CompanyService] Company not found or error:', companyResponse?.error);
       }
+    } else {
+      console.log('[CompanyService] getUserCompanies: No company_id found in user profile');
     }
     
     // If no company found or company_id is null, create a default company

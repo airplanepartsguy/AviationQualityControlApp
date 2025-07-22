@@ -16,11 +16,13 @@ import { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } from '../styles/theme'
 import { Ionicons } from '@expo/vector-icons';
 import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService';
 import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext';
 import {
   ensureDbOpen,
   createPhotoBatch,
   savePhoto,
   getBatchDetails,
+  openDatabase,
 } from '../services/databaseService';
 import { PhotoCaptureScreenNavigationProp, PhotoCaptureScreenRouteProp } from '../types/navigation';
 import * as MediaLibrary from 'expo-media-library';
@@ -840,6 +842,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
   const auth = useAuth();
   // User ID is accessed from the user object within the auth context.
   const userId = auth.user?.id;
+  const { currentCompany } = useCompany();
   
   const cameraRef = useRef<CameraView>(null);
   const manualInputRef = useRef<TextInput>(null);
@@ -1091,7 +1094,19 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
 
   const handleScannedIdSubmit = useCallback(async (scannedId: string) => {
     if (isLoading || !mountedRef.current) return;
+    
+    console.log(`[PCS_DEBUG] handleScannedIdSubmit: Starting with scannedId=${scannedId}`);
+    console.log(`[PCS_DEBUG] handleScannedIdSubmit: Current company context:`, {
+      currentCompany: currentCompany?.id ? {
+        id: currentCompany.id,
+        name: currentCompany.name
+      } : null,
+      userId: userId,
+      userEmail: auth.user?.email
+    });
+    
     setIsLoading(true);
+    
     const cleanId = scannedId.trim().toUpperCase();
 
     if (!/^[A-Z0-9-]{4,}$/i.test(cleanId)) {
@@ -1102,24 +1117,96 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
     }
 
     try {
-      const newIdType = cleanId.startsWith('ORD-') ? 'Order' : 'Inventory'; // Moved declaration up
+      const newIdType = cleanId.startsWith('ORD-') ? 'Order' : 'Inventory';
       console.log(`[PCS_DEBUG] handleScannedIdSubmit: Attempting to create batch with cleanId=${cleanId}, newIdType=${newIdType}`);
-      await ensureDbOpen();
-      // TODO: Verify return type of createPhotoBatch (e.g., string or number for batchId)
-      // Always use scanned ID as orderNumber to ensure it displays on Dashboard
-      // Fix for the issue where scanned IDs weren't showing up on Dashboard
-      console.log(`[PCS_DEBUG] handleScannedIdSubmit: Calling createPhotoBatch with userId=${userId || 'unknown_user'}, cleanId=${cleanId}, orderNumArg=${cleanId}, invIdArg=${newIdType === 'Inventory' ? cleanId : undefined}`);
-      const batchId = await createPhotoBatch(
-        userId || 'unknown_user',
-        cleanId, // Pass cleanId as referenceId
-        cleanId, // Always use the scanned ID as orderNumber for proper Dashboard display
-        newIdType === 'Inventory' ? cleanId : undefined
-      );
-      if (!mountedRef.current) return;
-      console.log(`[PCS_DEBUG] handleScannedIdSubmit: Batch created with batchId=${batchId}`);
+      
+      // Add timeout to database operations to prevent hanging
+      const dbOperationPromise = (async () => {
+        console.log(`[PCS_DEBUG] handleScannedIdSubmit: Starting direct database operation...`);
+        
+        // Get company context for RLS compliance
+        const companyId = currentCompany?.id;
+        
+        if (!companyId) {
+          throw new Error('No company context available for batch creation');
+        }
+        
+        console.log(`[PCS_DEBUG] handleScannedIdSubmit: Using companyId=${companyId}`);
+        
+        // Use managed database connection for consistency
+        let database;
+        try {
+          // Add specific timeout for database connection  
+          const dbConnectionPromise = openDatabase();
+          const dbTimeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Database connection timed out')), 2000)
+          );
+          
+          database = await Promise.race([dbConnectionPromise, dbTimeoutPromise]);
+          console.log(`[PCS_DEBUG] handleScannedIdSubmit: Got managed database instance`);
+        } catch (dbError) {
+          console.error('[PCS_DEBUG] Failed to get managed database:', dbError);
+          const errorMessage = dbError instanceof Error ? dbError.message : 'Unknown database error';
+          throw new Error(`Managed database connection failed: ${errorMessage}`);
+        }
+        
+        // Ensure companyId column exists (add if missing)
+        try {
+          await database.execAsync('ALTER TABLE photo_batches ADD COLUMN companyId TEXT');
+          console.log('[PCS_DEBUG] Added companyId column to photo_batches');
+        } catch (alterError) {
+          // Column likely already exists, which is fine
+          console.log('[PCS_DEBUG] companyId column already exists or alter failed:', alterError);
+        }
+        
+        // Simplified batch creation - direct INSERT without complex functions
+        try {
+          console.log(`[PCS_DEBUG] handleScannedIdSubmit: Attempting direct INSERT...`);
+          
+          const insertResult = await database.runAsync(
+            'INSERT INTO photo_batches (userId, companyId, referenceId, orderNumber, inventoryId, createdAt, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [
+              userId || 'unknown_user',
+              companyId, // Add required company_id for RLS
+              cleanId,
+              cleanId, // Always use as orderNumber for dashboard display
+              newIdType === 'Inventory' ? cleanId : null,
+              new Date().toISOString(),
+              'pending'
+            ]
+          );
+          
+          console.log(`[PCS_DEBUG] handleScannedIdSubmit: INSERT result:`, insertResult);
+          
+          if (insertResult.lastInsertRowId === undefined) {
+            throw new Error('Failed to get batch ID from INSERT');
+          }
+          
+          const batchId = insertResult.lastInsertRowId;
+          console.log(`[PCS_DEBUG] handleScannedIdSubmit: Created batch with ID=${batchId}`);
+          return batchId;
+          
+        } catch (insertError) {
+          console.error('[PCS_DEBUG] INSERT operation failed:', insertError);
+          throw insertError;
+        }
+      })();
 
+      // Add 5-second timeout for simpler operation
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Database operation timed out')), 5000)
+      );
+
+      const batchId = await Promise.race([dbOperationPromise, timeoutPromise]);
+      
+      if (!mountedRef.current) {
+        console.log('[PCS_DEBUG] Component unmounted during batch creation');
+        return;
+      }
+
+      // Create batch data object
       const newBatchData: PhotoBatch = {
-        id: batchId, // batchId is a number, PhotoBatch.id is a number
+        id: batchId,
         type: newIdType,
         referenceId: cleanId,
         orderNumber: newIdType === 'Order' ? cleanId : undefined,
@@ -1129,6 +1216,8 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
         status: 'InProgress',
         photos: [],
       };
+      
+      // Update UI state
       setCurrentBatch(newBatchData);
       setPhotoBatch([]);
       setIdentifier(cleanId);
@@ -1136,19 +1225,54 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
       setIsScanningActive(false);
       setShowManualInput(false);
       setScanFeedback({visible: true, text: `${newIdType}: ${cleanId}`});
+      
+      // Show success feedback
       showFeedbackAnimation(`Batch Started: ${cleanId}`, 'success');
       triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Heavy);
       logAnalyticsEvent('batch_created', { identifier: cleanId, type: newIdType });
+      
+      console.log(`[PCS_DEBUG] handleScannedIdSubmit: Successfully completed for ${cleanId}`);
+      
     } catch (error) {
       console.error(`[PCS_DEBUG] handleScannedIdSubmit: Error during batch creation for ${cleanId}:`, error);
+      
       if (!mountedRef.current) return;
-      console.error('Error creating batch:', error);
+      
+      // Specific error handling
+      let errorMessage = 'Error Starting Batch';
+      if (error instanceof Error) {
+        if (error.message.includes('timed out')) {
+          errorMessage = 'Database Timeout - Please Try Again';
+          // Reset database connection on timeout
+          try {
+            const { DatabaseResetUtility } = await import('../utils/databaseReset');
+            console.log('[PCS_DEBUG] Attempting database reset after timeout...');
+            // Don't await this - let it run in background
+            DatabaseResetUtility.resetDatabase().catch((resetError: Error) => 
+              console.error('[PCS_DEBUG] Database reset failed:', resetError)
+            );
+          } catch (resetError) {
+            console.error('[PCS_DEBUG] Could not import database reset utility:', resetError);
+          }
+        } else if (error.message.includes('database')) {
+          errorMessage = 'Database Error - Please Restart App';
+        }
+      }
+      
+      showFeedbackAnimation(errorMessage, 'error');
+      setScanFeedback({visible: true, text: 'Scan barcode or enter ID manually'});
+      setIsScanningActive(true);
+      
       const err = error instanceof Error ? error : new Error(String(error));
-      showFeedbackAnimation('Error Starting Batch', 'error');
-      logErrorToFile('batch_creation_error', err); // TODO: Revisit logging context if needed
+      logErrorToFile('batch_creation_error', err);
+    } finally {
+      // Always reset loading state
+      if (mountedRef.current) {
+        console.log('[PCS_DEBUG] handleScannedIdSubmit: Resetting loading state');
+        setIsLoading(false);
+      }
     }
-    if (mountedRef.current) setIsLoading(false);
-  }, [isLoading, userId, showFeedbackAnimation, triggerHapticFeedback]);
+  }, [userId, isLoading, showFeedbackAnimation, triggerHapticFeedback, logAnalyticsEvent, logErrorToFile, currentCompany]);
 
   const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
     if (!isScanningActive || isLoading || !mountedRef.current) return;
@@ -1160,7 +1284,9 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
 
     console.log('Barcode scanned:', data);
     triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Medium);
-    setScanFeedback({visible: true, text: `Processing: ${data.trim()}`});
+    setScanFeedback({visible: true, text: `Processing: ${data.trim()}...`});
+    
+    // Start processing with timeout safety
     handleScannedIdSubmit(data.trim());
   }, [isScanningActive, isLoading, handleScannedIdSubmit, triggerHapticFeedback]);
 
@@ -1215,54 +1341,131 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
       return;
     }
     if (!mountedRef.current) return;
-    setIsLoading(true);
-    setScanFeedback({visible: true, text: 'Processing photo...'});
-    try {
-      const metadata: PhotoMetadata = {
-        timestamp: new Date().toISOString(),
-        userId: userId || 'unknown-user',
-        deviceModel: `${Platform.OS} ${Platform.Version}`,
-        hasDefects: isDefect,
-      };
-      const newPhotoId = Crypto.randomUUID();
+    
+    console.log(`[PCS_DEBUG] processAndSavePhoto: Starting photo save process`);
+    console.log(`[PCS_DEBUG] processAndSavePhoto: Company context debug:`, {
+      currentCompany: currentCompany?.id ? {
+        id: currentCompany.id,
+        name: currentCompany.name
+      } : null,
+      companyIdFromContext: currentCompany?.id,
+      userId: userId,
+      userEmail: auth.user?.email,
+      batchId: currentBatch.id
+    });
+    
+    const newPhotoId = Crypto.randomUUID();
+    const metadata: PhotoMetadata = {
+      timestamp: new Date().toISOString(),
+      userId: userId || 'unknown-user',
+      deviceModel: `${Platform.OS} ${Platform.Version}`,
+      hasDefects: isDefect,
+    };
 
-      const photoDataToSave: PhotoData = {
-        id: newPhotoId,
-        batchId: currentBatch.id,
-        uri: photo.uri,
-        orderNumber: currentBatch.orderNumber || (currentBatch.type === 'Order' ? currentBatch.referenceId : undefined),
-        inventoryId: currentBatch.inventoryId || (currentBatch.type === 'Inventory' ? currentBatch.referenceId : undefined),
-        metadata,
-        syncStatus: 'pending',
-        photoTitle: selectedPhotoTitle, // Added photoTitle
-      };
+    const photoDataToSave: PhotoData = {
+      id: newPhotoId,
+      batchId: currentBatch.id,
+      uri: photo.uri,
+      orderNumber: currentBatch.orderNumber || (currentBatch.type === 'Order' ? currentBatch.referenceId : undefined),
+      inventoryId: currentBatch.inventoryId || (currentBatch.type === 'Inventory' ? currentBatch.referenceId : undefined),
+      metadata,
+      syncStatus: 'pending',
+      photoTitle: selectedPhotoTitle,
+    };
 
-      const savedPhotoId = await savePhoto(currentBatch.id, photoDataToSave);
+    // IMMEDIATE UI UPDATES (no waiting for database)
+    setPhotoBatch((prevValue: PhotoData[]) => [...prevValue, photoDataToSave]);
+    setLastCapturedPhoto(photoDataToSave);
+    showFeedbackAnimation(`${isDefect ? 'Defect' : 'Photo'} Saved`, 'success');
+    logAnalyticsEvent('photo_saved_to_db', { batchId: currentBatch.id, photoId: newPhotoId, isDefect });
+    
+    console.log(`[PCS_DEBUG] processAndSavePhoto: UI updated immediately for photo ${newPhotoId}`);
+    
+    // BACKGROUND DATABASE SAVE (non-blocking)
+    setTimeout(() => {
+      (async () => {
+        try {
+          console.log(`[PCS_DEBUG] processAndSavePhoto: Starting background save for photo ${newPhotoId}`);
+          
+          // Use managed database connection instead of creating new one
+          const database = await openDatabase();
+          console.log(`[PCS_DEBUG] processAndSavePhoto: Got managed database connection`);
+          
+          // Ensure required columns exist (non-blocking)
+          const companyId = currentCompany?.id;
+          if (!companyId) {
+            console.error(`[PCS_DEBUG] processAndSavePhoto: No companyId available for photo ${newPhotoId}`);
+          }
+          
+          console.log(`[PCS_DEBUG] processAndSavePhoto: Using companyId=${companyId}, batchId=${currentBatch.id}`);
+          
+          try {
+            await database.execAsync('ALTER TABLE photos ADD COLUMN companyId TEXT');
+            console.log('[PCS_DEBUG] Added companyId column to photos table');
+          } catch (alterError) {
+            // Column already exists - fine
+            console.log('[PCS_DEBUG] companyId column already exists in photos table');
+          }
+          
+          // Verify the photos table exists and has the right structure
+          const tableInfo = await database.getAllAsync("PRAGMA table_info(photos)");
+          console.log(`[PCS_DEBUG] processAndSavePhoto: photos table structure:`, tableInfo);
+          
+          // Save photo to database with detailed logging
+          console.log(`[PCS_DEBUG] processAndSavePhoto: About to INSERT photo with values:`, {
+            id: newPhotoId,
+            batchId: currentBatch.id,
+            companyId: companyId || 'NULL',
+            photoTitle: photoDataToSave.photoTitle || 'General Picture',
+            uri: photoDataToSave.uri,
+            metadataLength: JSON.stringify(photoDataToSave.metadata || {}).length
+          });
+          
+          const result = await database.runAsync(
+            'INSERT INTO photos (id, batchId, companyId, partNumber, photoTitle, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              newPhotoId,
+              currentBatch.id,
+              companyId || null,
+              photoDataToSave.partNumber || null,
+              photoDataToSave.photoTitle || 'General Picture',
+              photoDataToSave.uri,
+              JSON.stringify(photoDataToSave.metadata || {}),
+              photoDataToSave.annotations ? JSON.stringify(photoDataToSave.annotations) : null
+            ]
+          );
+          
+          console.log(`[PCS_DEBUG] processAndSavePhoto: Background save completed successfully for photo ${newPhotoId}:`, result);
+          
+          // Verify the photo was actually saved
+          const verifyResult = await database.getFirstAsync(
+            'SELECT id, batchId, photoTitle FROM photos WHERE id = ?',
+            [newPhotoId]
+          );
+          console.log(`[PCS_DEBUG] processAndSavePhoto: Verification query result:`, verifyResult);
+          
+          if (!verifyResult) {
+            throw new Error(`Photo ${newPhotoId} was not found after INSERT - database save may have failed`);
+          }
+          
+        } catch (error) {
+          console.error(`[PCS_DEBUG] processAndSavePhoto: Background save FAILED for photo ${newPhotoId}:`, error);
+          
+          // Try to show error to user if it's a critical failure
+          if (error instanceof Error && error.message.includes('database')) {
+            // Show a subtle error notification
+            setTimeout(() => {
+              showFeedbackAnimation('Photo save error - will retry on sync', 'error');
+            }, 2000);
+          }
+          
+          // Log the full error for debugging
+          logErrorToFile('background_photo_save_error', error instanceof Error ? error : new Error(String(error)));
+        }
+      })();
+    }, 0); // Execute on next tick to not block UI
 
-      if (!mountedRef.current) return;
-
-      const finalPhotoData: PhotoData = { ...photoDataToSave, id: savedPhotoId };
-
-      setPhotoBatch((prevValue: PhotoData[]) => [...prevValue, finalPhotoData]); // Typed 'prevValue'
-      setLastCapturedPhoto(finalPhotoData);
-
-      if (!mountedRef.current) return;
-      showFeedbackAnimation(`${isDefect ? 'Defect' : 'Photo'} Saved`, 'success');
-      logAnalyticsEvent('photo_saved_to_db', { batchId: currentBatch.id, photoId: savedPhotoId, isDefect });
-
-    } catch (error) {
-      if (!mountedRef.current) return;
-      console.error('Error processing/saving photo:', error);
-      const err = error instanceof Error ? error : new Error(String(error));
-      showFeedbackAnimation(`Error Saving Photo: ${err.message.substring(0,30)}`, 'error');
-      logErrorToFile('processAndSavePhoto_error', err);
-    } finally {
-      if (mountedRef.current) {
-        setIsLoading(false);
-        setScanFeedback({visible: true, text: isScanningActive ? 'Scan barcode or QR code' : 'Ready to capture'});
-      }
-    }
-  }, [currentBatch, userId, mountedRef, setIsLoading, setScanFeedback, savePhoto, setPhotoBatch, setLastCapturedPhoto, showFeedbackAnimation, logAnalyticsEvent, logErrorToFile, isScanningActive, selectedPhotoTitle, Platform, Crypto]);
+  }, [currentBatch, userId, showFeedbackAnimation, setPhotoBatch, setLastCapturedPhoto, logAnalyticsEvent, selectedPhotoTitle, currentCompany, logErrorToFile]);
 
   const takePicture = useCallback(async (isDefect: boolean = false) => {
     if (isCapturing || !cameraReady || !mountedRef.current) return;
@@ -1272,36 +1475,52 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
       if (!showManualInput) toggleManualInput(); 
       return;
     }
+    
     setIsCapturing(true);
-    setScanFeedback({visible: true, text: 'Capturing...'});
     triggerHapticFeedback(Haptics.ImpactFeedbackStyle.Medium);
+    
     try {
-      await new Promise(resolve => setTimeout(resolve, 50));
+      console.log(`[PCS_DEBUG] takePicture: Starting fast photo capture...`);
+      
+      // Fast photo capture - no timeout, just direct capture
       const photo = await cameraRef.current?.takePictureAsync({
-        quality: 1.0, // Maximize JPEG quality
+        quality: 0.8, // Slightly lower quality for speed
         skipProcessing: true, 
-        exif: true,
+        exif: false, // Skip EXIF for speed
       });
-      if (!photo || !mountedRef.current) throw new Error('Photo capture failed or component unmounted.');
+      
+      if (!photo || !mountedRef.current) {
+        throw new Error('Photo capture failed or component unmounted.');
+      }
+      
+      console.log(`[PCS_DEBUG] takePicture: Photo captured successfully in ${Date.now()} ms`);
       
       // Auto-mark as defect if the photo type is 'Defect'
       const shouldMarkAsDefect = isDefect || selectedPhotoTitle === 'Defect';
       
-      await processAndSavePhoto(photo, shouldMarkAsDefect);
+      // Process and save (now non-blocking)
+      processAndSavePhoto(photo, shouldMarkAsDefect);
       logAnalyticsEvent('photo_captured_raw', { batchId: currentBatch.id, isDefect: shouldMarkAsDefect });
+      
+      console.log(`[PCS_DEBUG] takePicture: Processing started, UI ready for next photo`);
+      
     } catch (error: any) {
       if (!mountedRef.current) return;
-      console.error('Error in takePicture:', error);
+      console.error('[PCS_DEBUG] Error in takePicture:', error);
       const err = error instanceof Error ? error : new Error(String(error));
-      if (!err.message.includes('Error Saving Photo')) {
-         showFeedbackAnimation('Capture Error', 'error');
-      }
-      logErrorToFile('takePicture_error', err); // TODO: Revisit logging context if needed
+      
+      // Show appropriate error message
+      showFeedbackAnimation('Capture Error', 'error');
+      logErrorToFile('takePicture_error', err);
     } finally {
-      if (mountedRef.current) setIsCapturing(false);
-      logAnalyticsEvent('photo_capture_attempt_completed', { context: 'takePicture_finally' }); // Changed event and payload
+      // Reset immediately for next photo
+      if (mountedRef.current) {
+        setIsCapturing(false);
+        console.log(`[PCS_DEBUG] takePicture: Ready for next photo`);
+      }
+      logAnalyticsEvent('photo_capture_attempt_completed', { context: 'takePicture_finally' });
     }
-  }, [isCapturing, cameraReady, currentBatch, processAndSavePhoto, showFeedbackAnimation, triggerHapticFeedback, toggleManualInput, showManualInput]);
+  }, [isCapturing, cameraReady, currentBatch, processAndSavePhoto, showFeedbackAnimation, triggerHapticFeedback, toggleManualInput, showManualInput, selectedPhotoTitle, logAnalyticsEvent, logErrorToFile, mountedRef]);
 
   if (isLoading && !cameraReady && !cameraPermissionInfo?.granted) {
     return (

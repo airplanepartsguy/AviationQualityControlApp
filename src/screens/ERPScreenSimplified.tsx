@@ -10,12 +10,13 @@ import {
   RefreshControl
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, CARD_STYLES } from '../styles/theme';
 import { getAvailableERPIntegrations, type ERPIntegrationAvailability } from '../services/erpIntegrationPermissionsService';
 import companyIntegrationsService from '../services/companyIntegrationsService';
+import { useCallback } from 'react';
 
 interface ERPIntegrationStatus {
   salesforce: {
@@ -115,6 +116,16 @@ const ERPScreenSimplified: React.FC = () => {
   useEffect(() => {
     loadERPData();
   }, [currentCompany?.id]);
+
+  // Refresh data when screen comes into focus (e.g., returning from Salesforce config)
+  useFocusEffect(
+    useCallback(() => {
+      if (currentCompany?.id) {
+        console.log('[ERPScreenSimplified] Screen focused, refreshing ERP data...');
+        loadERPData();
+      }
+    }, [currentCompany?.id])
+  );
 
   const handleRefresh = async () => {
     setRefreshing(true);

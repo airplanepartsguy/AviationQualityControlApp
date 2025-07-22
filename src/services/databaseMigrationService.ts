@@ -17,9 +17,18 @@ export class DatabaseMigrationService {
       version: 1,
       description: 'Initial schema with basic tables',
       up: async (db: SQLite.SQLiteDatabase) => {
+        // Set WAL mode and foreign keys OUTSIDE of transaction
+        try {
+          await db.execAsync('PRAGMA journal_mode = WAL');
+          await db.execAsync('PRAGMA foreign_keys = ON');
+        } catch (error) {
+          console.warn('[Migration] Could not set WAL mode or foreign keys:', error);
+          // Continue anyway - these are optimizations, not critical
+        }
+
+        // Create tables in a single transaction
         await db.execAsync(`
-          PRAGMA journal_mode = WAL;
-          PRAGMA foreign_keys = ON;
+          BEGIN TRANSACTION;
 
           CREATE TABLE IF NOT EXISTS photo_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +68,8 @@ export class DatabaseMigrationService {
           CREATE INDEX IF NOT EXISTS idx_photos_syncStatus ON photos(syncStatus);
           CREATE INDEX IF NOT EXISTS idx_batches_userId ON photo_batches(userId);
           CREATE INDEX IF NOT EXISTS idx_batches_createdAt ON photo_batches(createdAt);
+
+          COMMIT;
         `);
       }
     },
@@ -66,78 +77,57 @@ export class DatabaseMigrationService {
       version: 2,
       description: 'Add companies and multi-tenant support',
       up: async (db: SQLite.SQLiteDatabase) => {
-        // Add companies table
+        // Add companies table and extend existing tables
         await db.execAsync(`
+          BEGIN TRANSACTION;
+
+          -- Companies table
           CREATE TABLE IF NOT EXISTS companies (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             code TEXT UNIQUE NOT NULL,
-            industry TEXT NOT NULL,
+            industry TEXT,
             address TEXT,
             phone TEXT,
             email TEXT,
             website TEXT,
             logoUrl TEXT,
-            settings TEXT NOT NULL,
-            subscription TEXT NOT NULL,
+            settings TEXT DEFAULT '{}',
+            subscription TEXT DEFAULT '{}',
             isActive INTEGER DEFAULT 1,
             createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-            updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
-            syncStatus TEXT DEFAULT 'pending',
-            lastSyncAt TEXT,
-            version INTEGER DEFAULT 1
+            updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
           );
-        `);
 
-        // Add company_users table
-        await db.execAsync(`
+          -- Company users table  
           CREATE TABLE IF NOT EXISTS company_users (
             id TEXT PRIMARY KEY,
             companyId TEXT NOT NULL,
             userId TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'manager', 'member', 'guest')),
-            permissions TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            permissions TEXT DEFAULT '[]',
             department TEXT,
             title TEXT,
-            invitedBy TEXT NOT NULL,
+            invitedBy TEXT,
             joinedAt TEXT DEFAULT CURRENT_TIMESTAMP,
-            lastActiveAt TEXT DEFAULT CURRENT_TIMESTAMP,
+            lastActiveAt TEXT,
             isActive INTEGER DEFAULT 1,
-            syncStatus TEXT DEFAULT 'pending',
-            lastSyncAt TEXT,
-            version INTEGER DEFAULT 1,
             FOREIGN KEY (companyId) REFERENCES companies (id) ON DELETE CASCADE,
             UNIQUE(companyId, userId)
           );
-        `);
 
-        // Add companyId to existing tables if not exists
-        try {
-          await db.execAsync(`ALTER TABLE photo_batches ADD COLUMN companyId TEXT;`);
-        } catch (error: any) {
-          // Column might already exist, ignore duplicate column error
-          if (!error.message?.includes('duplicate column')) {
-            throw error;
-          }
-        }
-        
-        try {
-          await db.execAsync(`ALTER TABLE photos ADD COLUMN companyId TEXT;`);
-        } catch (error: any) {
-          // Column might already exist, ignore duplicate column error
-          if (!error.message?.includes('duplicate column')) {
-            throw error;
-          }
-        }
+          -- Add companyId to existing tables if not exists
+          ALTER TABLE photo_batches ADD COLUMN companyId TEXT;
+          ALTER TABLE photos ADD COLUMN companyId TEXT;
 
-        // Create indexes
-        await db.execAsync(`
-          CREATE INDEX IF NOT EXISTS idx_companies_code ON companies (code);
-          CREATE INDEX IF NOT EXISTS idx_companies_active ON companies (isActive);
-          CREATE INDEX IF NOT EXISTS idx_company_users_company ON company_users (companyId);
-          CREATE INDEX IF NOT EXISTS idx_company_users_user ON company_users (userId);
-          CREATE INDEX IF NOT EXISTS idx_batches_company ON photo_batches (companyId);
-          CREATE INDEX IF NOT EXISTS idx_photos_company ON photos (companyId);
+          -- Indexes for performance
+          CREATE INDEX IF NOT EXISTS idx_companies_code ON companies(code);
+          CREATE INDEX IF NOT EXISTS idx_company_users_company ON company_users(companyId);
+          CREATE INDEX IF NOT EXISTS idx_company_users_user ON company_users(userId);
+          CREATE INDEX IF NOT EXISTS idx_batches_company ON photo_batches(companyId);
+          CREATE INDEX IF NOT EXISTS idx_photos_company ON photos(companyId);
+
+          COMMIT;
         `);
       }
     }

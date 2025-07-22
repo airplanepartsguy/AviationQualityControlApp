@@ -241,55 +241,73 @@ export const fetchUserProfile = async (userId: string): Promise<any> => {
   try {
     console.log(`[SupabaseService] Fetching profile for user ${userId}...`);
     
-    const { data, error } = await supabase
+    // First get the user profile
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select(`
-        *,
-        companies (
-          id,
-          name,
-          created_at
-        )
-      `)
+      .select('*')
       .eq('id', userId)
       .single();
 
-    if (error) {
-      console.error('[SupabaseService] Fetch profile error:', error.message);
-      throw error;
+    if (profileError) {
+      console.error('[SupabaseService] Fetch profile error:', profileError.message);
+      throw profileError;
     }
 
-    console.log('[SupabaseService] Profile fetched successfully');
-    return data;
+    // Get the company info separately if user has a company
+    let companyData = null;
+    if (profile?.company_id) {
+      const { data: company, error: companyError } = await supabase
+        .from('companies')
+        .select('id, name, created_at')
+        .eq('id', profile.company_id)
+        .single();
+      
+      if (companyError) {
+        console.warn('[SupabaseService] Company fetch error:', companyError.message);
+      } else {
+        companyData = company;
+      }
+    }
+
+    // Get the company's license info (licenses are tied to companies, not users)
+    let licenseData = null;
+    if (profile?.company_id) {
+      const { data: license, error: licenseError } = await supabase
+        .from('licenses')
+        .select('*')
+        .eq('company_id', profile.company_id)
+        .single();
+      
+      if (licenseError) {
+        console.warn('[SupabaseService] License fetch error:', licenseError.message);
+      } else {
+        licenseData = license;
+      }
+    }
+
+    // Combine the data in the expected format
+    const combinedProfile = {
+      ...profile,
+      companies: companyData, // Keep the original structure expected by Settings screen
+      license_data: licenseData
+    };
+
+    console.log('[SupabaseService] Profile fetched successfully:', {
+      hasProfile: !!profile,
+      hasCompany: !!companyData,
+      hasLicense: !!licenseData,
+      companyName: companyData?.name,
+      licenseType: licenseData?.type
+    });
+
+    return combinedProfile;
   } catch (error) {
     console.error('[SupabaseService] Fetch profile failed:', error);
     throw error;
   }
 };
 
-// Fetch license information separately
-export const fetchUserLicense = async (licenseId: string): Promise<any> => {
-  try {
-    console.log(`[SupabaseService] Fetching license ${licenseId}...`);
-    
-    const { data, error } = await supabase
-      .from('licenses')
-      .select('*')
-      .eq('id', licenseId)
-      .single();
-
-    if (error) {
-      console.error('[SupabaseService] Fetch license error:', error.message);
-      throw error;
-    }
-
-    console.log('[SupabaseService] License fetched successfully');
-    return data;
-  } catch (error) {
-    console.error('[SupabaseService] Fetch license failed:', error);
-    throw error;
-  }
-};
+// Note: fetchUserLicense removed - license data is now fetched in fetchUserProfile
 
 export const updateUserProfile = async (userId: string, updates: any): Promise<any> => {
   try {

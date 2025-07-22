@@ -89,19 +89,30 @@ class SalesforceOAuthService {
       
       // Generate PKCE challenge for security
       const codeVerifier = this.generateCodeVerifier();
+      
+      // Generate SHA256 hash of the code verifier
       const codeChallenge = await Crypto.digestStringAsync(
         Crypto.CryptoDigestAlgorithm.SHA256,
         codeVerifier,
         { encoding: Crypto.CryptoEncoding.BASE64 }
       );
-      // Remove padding and make URL-safe
+      
+      // Make Base64 URL-safe (RFC 7636 compliant)
       const urlSafeCodeChallenge = codeChallenge.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      
+      console.log('[SalesforceOAuth] PKCE Details:', {
+        codeVerifierLength: codeVerifier.length,
+        codeVerifierPreview: codeVerifier.substring(0, 20) + '...',
+        originalChallengeLength: codeChallenge.length,
+        urlSafeChallengeLength: urlSafeCodeChallenge.length,
+        challengePreview: urlSafeCodeChallenge.substring(0, 20) + '...'
+      });
       
       // Store PKCE code verifier in Supabase cloud database for Edge Function to retrieve
       console.log('[SalesforceOAuth] Storing PKCE code verifier in Supabase cloud database...');
       
       try {
-        // First, delete any existing oauth_state records for this company/integration
+        // First, delete any existing oauth_state records for this company/integration to prevent conflicts
         const { error: deleteError } = await supabaseService.supabase
           .from('oauth_state')
           .delete()
@@ -110,22 +121,37 @@ class SalesforceOAuthService {
         
         if (deleteError) {
           console.warn('[SalesforceOAuth] Warning: Could not delete old oauth_state:', deleteError);
+        } else {
+          console.log('[SalesforceOAuth] Cleaned up existing oauth_state records');
         }
         
-        // Now insert the new PKCE code verifier
+        // Now insert the new PKCE code verifier with extended expiry
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+        
+        const pkceRecord = {
+          company_id: companyId,
+          integration_type: 'salesforce',
+          code_verifier: codeVerifier,
+          code_challenge: urlSafeCodeChallenge,
+          expires_at: expiresAt
+        };
+        
+        console.log('[SalesforceOAuth] 💾 Inserting PKCE record:', {
+          company_id: companyId,
+          integration_type: 'salesforce',
+          code_verifier_length: codeVerifier.length,
+          code_challenge_length: urlSafeCodeChallenge.length,
+          expires_at: expiresAt
+        });
+        
         const { data: insertData, error: storeError } = await supabaseService.supabase
           .from('oauth_state')
-          .insert({
-            company_id: companyId,
-            integration_type: 'salesforce',
-            code_verifier: codeVerifier,
-            code_challenge: urlSafeCodeChallenge,
-            expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
-          })
+          .insert(pkceRecord)
           .select();
         
         if (storeError) {
           console.error('[SalesforceOAuth] CRITICAL: Failed to store PKCE code verifier in Supabase:', storeError);
+          console.error('[SalesforceOAuth] Insert data that failed:', pkceRecord);
           throw new Error(`Failed to store PKCE code verifier: ${storeError.message}`);
         }
         
@@ -133,30 +159,74 @@ class SalesforceOAuthService {
           company_id: companyId,
           integration_type: 'salesforce',
           code_verifier_length: codeVerifier.length,
-          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+          code_challenge_length: urlSafeCodeChallenge.length,
+          expires_at: expiresAt,
+          record_id: insertData?.[0]?.id,
+          created_at: insertData?.[0]?.created_at
         });
+        
+        // VERIFICATION: Immediately query back to confirm storage worked
+        console.log('[SalesforceOAuth] 🔍 Verifying PKCE storage...');
+        const { data: verifyData, error: verifyError } = await supabaseService.supabase
+          .from('oauth_state')
+          .select('*')
+          .eq('company_id', companyId)
+          .eq('integration_type', 'salesforce');
+          
+        if (verifyError) {
+          console.error('[SalesforceOAuth] ⚠️ Cannot verify PKCE storage:', verifyError);
+        } else {
+          console.log('[SalesforceOAuth] 📊 Verification result:', {
+            recordCount: verifyData?.length || 0,
+            records: verifyData?.map(r => ({
+              id: r.id,
+              company_id: r.company_id,
+              verifierLength: r.code_verifier?.length,
+              expiresAt: r.expires_at
+            }))
+          });
+        }
         
       } catch (storeError: any) {
         console.error('[SalesforceOAuth] CRITICAL ERROR: Cannot proceed without storing PKCE code verifier:', storeError);
-        throw new Error(`OAuth initialization failed: ${storeError?.message || 'Unknown error'}`);
+        throw new Error(`OAuth setup failed: ${storeError.message}`);
       }
       
+      // Build OAuth URL with all required parameters
       const redirectUri = this.getRedirectUri();
-      console.log('[SalesforceOAuth] Using redirect URI:', redirectUri);
+      const state = companyId; // Use company ID as state parameter
+      const scope = 'api refresh_token offline_access'; // Standard scopes for API access
       
-      const authUrl = `${baseUrl}/services/oauth2/authorize?` +
-        `response_type=code&` +
-        `client_id=${encodeURIComponent(config.clientId)}&` +
-        `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-        `scope=${encodeURIComponent('api refresh_token offline_access')}&` +
-        `code_challenge=${urlSafeCodeChallenge}&` +
-        `code_challenge_method=S256&` +
-        `state=${companyId}`;
+      const params = new URLSearchParams({
+        response_type: 'code',
+        client_id: config.clientId,
+        redirect_uri: redirectUri,
+        scope: scope,
+        code_challenge: urlSafeCodeChallenge,
+        code_challenge_method: 'S256', // SHA256 hash method
+        state: state
+      });
       
-      return { authUrl, codeChallenge: codeVerifier };
+      const authUrl = `${baseUrl}/services/oauth2/authorize?${params.toString()}`;
+      
+      console.log('[SalesforceOAuth] OAuth URL constructed:', {
+        baseUrl,
+        clientId: config.clientId.substring(0, 15) + '...',
+        redirectUri,
+        scope,
+        challenge: urlSafeCodeChallenge.substring(0, 20) + '...',
+        state,
+        fullUrlLength: authUrl.length
+      });
+      
+      return { 
+        authUrl, 
+        codeChallenge: urlSafeCodeChallenge 
+      };
+      
     } catch (error) {
-      console.error('[SalesforceOAuth] Error initiating OAuth flow:', error);
-      throw new Error('Failed to initiate OAuth flow');
+      console.error('[SalesforceOAuth] Failed to initiate OAuth flow:', error);
+      throw error;
     }
   }
 

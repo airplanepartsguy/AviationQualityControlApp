@@ -5,8 +5,8 @@
  */
 
 import { salesforceOAuthService } from './salesforceOAuthService';
-import { supabaseService } from './supabaseService';
-import { databaseService } from './databaseService';
+import supabaseService from './supabaseService';
+import * as databaseService from './databaseService';
 
 export interface SalesforceMapping {
   // Object mappings
@@ -136,7 +136,7 @@ class SalesforceSyncService {
           }
         } catch (error) {
           result.recordsFailed++;
-          result.errors.push(`Batch ${batch.name}: ${error.message}`);
+          result.errors.push(`Batch ${batch.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
           console.error('[SalesforceSync] Error syncing batch:', error);
         }
       }
@@ -155,7 +155,7 @@ class SalesforceSyncService {
         recordsProcessed: 0,
         recordsSucceeded: 0,
         recordsFailed: 0,
-        errors: [error.message],
+        errors: [error instanceof Error ? error.message : 'Unknown sync error'],
         salesforceIds: {}
       };
     }
@@ -261,7 +261,7 @@ class SalesforceSyncService {
         }
       } catch (error) {
         result.recordsFailed++;
-        result.errors.push(`Photo ${photo.name}: ${error.message}`);
+        result.errors.push(`Photo ${photo.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     }
 
@@ -277,7 +277,7 @@ class SalesforceSyncService {
   ): Promise<BatchSyncData[]> {
     try {
       // Get batches from local database
-      const db = await databaseService.getDatabase();
+      const db = await databaseService.openDatabase();
       
       let query = `
         SELECT 
@@ -395,6 +395,72 @@ class SalesforceSyncService {
   }
 
   /**
+   * Make authenticated Salesforce API request with automatic token refresh
+   */
+  private async makeAuthenticatedRequest(
+    companyId: string,
+    url: string,
+    options: RequestInit = {}
+  ): Promise<Response> {
+    console.log(`[SalesforceSync] Making authenticated request to: ${url}`);
+    
+    // Get access token (this method already handles token refresh internally)
+    const accessToken = await salesforceOAuthService.getValidAccessToken(companyId);
+    if (!accessToken) {
+      throw new Error('No valid Salesforce OAuth tokens found. Please re-authenticate.');
+    }
+
+    // Add authorization header
+    const headers = {
+      'Authorization': `Bearer ${accessToken}`,
+      'Accept': 'application/json',
+      ...options.headers
+    };
+
+    // Make initial request
+    let response = await fetch(url, {
+      ...options,
+      headers
+    });
+
+    // If 401 (unauthorized/expired token), try to refresh and retry
+    if (response.status === 401) {
+      console.log('[SalesforceSync] Received 401 error, attempting token refresh...');
+      
+      try {
+        // Get fresh token (this will trigger refresh if needed)
+        const freshToken = await salesforceOAuthService.getValidAccessToken(companyId);
+        
+        if (freshToken && freshToken !== accessToken) {
+          console.log('[SalesforceSync] Got fresh token, retrying request...');
+          
+          // Retry the request with new token
+          const refreshedHeaders = {
+            ...headers,
+            'Authorization': `Bearer ${freshToken}`
+          };
+          
+          response = await fetch(url, {
+            ...options,
+            headers: refreshedHeaders
+          });
+          
+          if (response.status === 401) {
+            throw new Error('Authentication failed even after token refresh. Please re-authenticate with Salesforce.');
+          }
+        } else {
+          throw new Error('Token refresh failed. Please re-authenticate with Salesforce.');
+        }
+      } catch (refreshError) {
+        console.error('[SalesforceSync] Token refresh error:', refreshError);
+        throw new Error('Session expired and token refresh failed. Please re-authenticate with Salesforce.');
+      }
+    }
+
+    return response;
+  }
+
+  /**
    * Test Salesforce API connection and permissions
    */
   async testSalesforceAPI(companyId: string): Promise<{
@@ -414,13 +480,8 @@ class SalesforceSyncService {
       const instanceUrl = await this.getInstanceUrl(companyId);
       const mapping = this.getDefaultMapping();
 
-      // Test API access
-      const apiResponse = await fetch(`${instanceUrl}/services/data/v58.0/`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Accept': 'application/json'
-        }
-      });
+      // Test API access with automatic token refresh
+      const apiResponse = await this.makeAuthenticatedRequest(companyId, `${instanceUrl}/services/data/v58.0/`);
 
       if (!apiResponse.ok) {
         return {
@@ -429,15 +490,10 @@ class SalesforceSyncService {
         };
       }
 
-      // Test object access
-      const objectResponse = await fetch(
-        `${instanceUrl}/services/data/v58.0/sobjects/${mapping.objects.batch}/describe/`,
-        {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Accept': 'application/json'
-          }
-        }
+      // Test object access with automatic token refresh
+      const objectResponse = await this.makeAuthenticatedRequest(
+        companyId,
+        `${instanceUrl}/services/data/v58.0/sobjects/${mapping.objects.batch}/describe/`
       );
 
       if (!objectResponse.ok) {
@@ -464,7 +520,7 @@ class SalesforceSyncService {
       console.error('[SalesforceSync] API test failed:', error);
       return {
         success: false,
-        message: `API test failed: ${error.message}`
+        message: `API test failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }

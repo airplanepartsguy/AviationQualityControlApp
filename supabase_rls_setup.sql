@@ -1,6 +1,11 @@
 -- Final, Corrected, and Idempotent Schema & RLS Setup Script
 -- This script cleans up the database and establishes the complete schema and RLS policies.
 -- It is designed to be safely runnable multiple times.
+--
+-- IMPORTANT: Mobile App Compatibility
+-- The mobile app uses local SQLite storage with camelCase column names (userId, companyId)
+-- but Supabase uses snake_case (user_id, company_id). The RLS policies below
+-- assume the Supabase naming convention. Ensure sync operations handle the conversion.
 
 -- Best-practice headers for transaction safety and role context
 SET statement_timeout = '30s';

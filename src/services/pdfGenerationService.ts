@@ -4,11 +4,13 @@
  */
 
 import * as FileSystem from 'expo-file-system';
+import * as Print from 'expo-print';
 import { PhotoData } from '../types/data';
 
 export interface PdfGenerationResult {
   success: boolean;
   pdfBase64?: string;
+  pdfUri?: string;
   error?: string;
   photoCount?: number;
 }
@@ -16,7 +18,7 @@ export interface PdfGenerationResult {
 class PdfGenerationService {
   /**
    * Generate PDF from photo batch
-   * Creates a multi-page PDF with photos and metadata
+   * Creates a multi-page PDF with actual embedded photos
    */
   async generatePdfFromPhotos(
     photos: PhotoData[],
@@ -37,7 +39,7 @@ class PdfGenerationService {
         };
       }
 
-      // Convert photos to base64 if they're file URIs
+      // Convert photos to base64 data URLs
       const photoBase64Array: string[] = [];
       
       for (const photo of photos) {
@@ -46,7 +48,7 @@ class PdfGenerationService {
           
           if (photo.uri.startsWith('data:')) {
             // Already base64 encoded
-            base64Data = photo.uri.split(',')[1];
+            base64Data = photo.uri;
           } else {
             // Read file and convert to base64
             const fileInfo = await FileSystem.getInfoAsync(photo.uri);
@@ -55,9 +57,10 @@ class PdfGenerationService {
               continue;
             }
             
-            base64Data = await FileSystem.readAsStringAsync(photo.uri, {
+            const base64File = await FileSystem.readAsStringAsync(photo.uri, {
               encoding: FileSystem.EncodingType.Base64,
             });
+            base64Data = `data:image/jpeg;base64,${base64File}`;
           }
           
           photoBase64Array.push(base64Data);
@@ -75,8 +78,8 @@ class PdfGenerationService {
         };
       }
 
-      // Generate PDF with photos
-      const pdfBase64 = await this.createPdfWithPhotos(
+      // Generate PDF with actual photos
+      const pdfResult = await this.createPdfWithEmbeddedPhotos(
         photoBase64Array,
         scannedId,
         options
@@ -84,9 +87,15 @@ class PdfGenerationService {
 
       console.log(`[PDFGeneration] PDF generated successfully with ${photoBase64Array.length} photos`);
       
+      // Convert to base64 for upload
+      const pdfBase64 = await FileSystem.readAsStringAsync(pdfResult, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      
       return {
         success: true,
         pdfBase64,
+        pdfUri: pdfResult,
         photoCount: photoBase64Array.length
       };
 
@@ -101,10 +110,10 @@ class PdfGenerationService {
   }
 
   /**
-   * Create PDF with embedded photos
-   * Uses a simple PDF structure with images
+   * Create PDF with embedded photos using expo-print
+   * This creates actual PDFs with photos, not just text
    */
-  private async createPdfWithPhotos(
+  private async createPdfWithEmbeddedPhotos(
     photoBase64Array: string[],
     scannedId: string,
     options: {
@@ -112,123 +121,132 @@ class PdfGenerationService {
       includeMetadata?: boolean;
     }
   ): Promise<string> {
-    // For now, create a simple PDF with text content
-    // In a full implementation, this would use a proper PDF library like react-native-pdf-lib
-    // or generate a more complex PDF structure with embedded images
+    const title = options.title || `${scannedId} - Quality Control Photos`;
     
-    const title = options.title || `${scannedId} - Photos`;
-    const photoCount = photoBase64Array.length;
+    // Create HTML content with embedded photos (same approach as PDFGenerationScreen)
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>${title}</title>
+        <style>
+          body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+          }
+          .page {
+            page-break-after: always;
+            page-break-inside: avoid;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+          }
+          .page:last-child {
+            page-break-after: auto;
+          }
+          .image-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+          }
+          .image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+          }
+          .header {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            text-align: center;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 5px;
+            z-index: 10;
+          }
+        </style>
+      </head>
+      <body>
+        ${photoBase64Array.map((dataUrl, index) => `
+          <div class="page">
+            <div class="header">${title} - Page ${index + 1} of ${photoBase64Array.length}</div>
+            <div class="image-container">
+              <img class="image" src="${dataUrl}" alt="Photo ${index + 1}" />
+            </div>
+          </div>
+        `).join('')}
+      </body>
+      </html>
+    `;
     
-    // Create a basic PDF structure
-    // This is a simplified version - in production, you'd use a proper PDF library
-    const pdfContent = this.generateBasicPdfWithPhotos(title, photoCount, scannedId);
+    // Create the PDF using expo-print
+    const { uri } = await Print.printToFileAsync({
+      html: htmlContent,
+      width: 612, // 8.5 inches at 72 PPI
+      height: 792, // 11 inches at 72 PPI
+    });
     
-    // Convert to base64 (React Native compatible)
-    const pdfBase64 = btoa(pdfContent);
-    
-    return pdfBase64;
-  }
-
-  /**
-   * Generate basic PDF content with photo information
-   * This is a simplified version - in production, use a proper PDF library
-   */
-  private generateBasicPdfWithPhotos(title: string, photoCount: number, scannedId: string): string {
-    const currentDate = new Date().toLocaleDateString();
-    
-    // Basic PDF structure with content
-    const pdfContent = `%PDF-1.4
-1 0 obj
-<<
-/Type /Catalog
-/Pages 2 0 R
->>
-endobj
-
-2 0 obj
-<<
-/Type /Pages
-/Kids [3 0 R]
-/Count 1
->>
-endobj
-
-3 0 obj
-<<
-/Type /Page
-/Parent 2 0 R
-/MediaBox [0 0 612 792]
-/Contents 4 0 R
-/Resources <<
-/Font <<
-/F1 5 0 R
->>
->>
->>
-endobj
-
-4 0 obj
-<<
-/Length 200
->>
-stream
-BT
-/F1 16 Tf
-72 720 Td
-(${title}) Tj
-0 -30 Td
-/F1 12 Tf
-(Scanned ID: ${scannedId}) Tj
-0 -20 Td
-(Photo Count: ${photoCount}) Tj
-0 -20 Td
-(Generated: ${currentDate}) Tj
-0 -40 Td
-(Photos processed and ready for upload) Tj
-ET
-endstream
-endobj
-
-5 0 obj
-<<
-/Type /Font
-/Subtype /Type1
-/BaseFont /Helvetica
->>
-endobj
-
-xref
-0 6
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000273 00000 n 
-0000000524 00000 n 
-trailer
-<<
-/Size 6
-/Root 1 0 R
->>
-startxref
-593
-%%EOF`;
-
-    return pdfContent;
+    return uri;
   }
 
   /**
    * Create a test PDF for development/testing
    */
   createTestPdf(scannedId: string): string {
-    const pdfContent = this.generateBasicPdfWithPhotos(
-      `${scannedId} - Test PDF`,
-      0,
-      scannedId
-    );
+    // This method is now deprecated - use generatePdfFromPhotos instead
+    console.warn('[PDFGeneration] createTestPdf is deprecated. Use generatePdfFromPhotos with actual photos.');
     
-    return btoa(pdfContent);
+    // Return a simple base64 PDF for backward compatibility
+    const basicPdf = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 44 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Test PDF - ${scannedId}) Tj
+ET
+endstream
+endobj
+xref
+0 5
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000207 00000 n 
+trailer
+<< /Size 5 /Root 1 0 R >>
+startxref
+301
+%%EOF`;
+    
+    return btoa(basicPdf);
   }
 }
 
-export default new PdfGenerationService();
+export const pdfGenerationService = new PdfGenerationService();

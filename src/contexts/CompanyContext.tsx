@@ -57,16 +57,28 @@ export const CompanyProvider: React.FC<CompanyProviderProps> = ({ children }) =>
    * Load user's companies
    */
   const loadUserCompanies = async (): Promise<void> => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      console.log('[CompanyContext] loadUserCompanies: No user ID available');
+      return;
+    }
+    
+    console.log(`[CompanyContext] loadUserCompanies: Starting for user ${user.id} (${user.email})`);
     
     setIsLoadingCompanies(true);
     try {
       const companies = await companyService.getUserCompanies(user.id);
+      console.log(`[CompanyContext] loadUserCompanies: Retrieved ${companies.length} companies:`, companies.map(c => ({ id: c.id, name: c.name })));
+      
       setUserCompanies(companies);
       
       // If no current company is set and we have companies, set the first one
       if (!currentCompany && companies.length > 0) {
+        console.log(`[CompanyContext] loadUserCompanies: Setting first company as current: ${companies[0].name}`);
         await switchCompany(companies[0].id);
+      } else if (!currentCompany && companies.length === 0) {
+        console.warn(`[CompanyContext] loadUserCompanies: No companies found for user ${user.email}`);
+      } else {
+        console.log(`[CompanyContext] loadUserCompanies: Current company already set: ${currentCompany?.name}`);
       }
     } catch (error) {
       console.error('[CompanyContext] Error loading user companies:', error);

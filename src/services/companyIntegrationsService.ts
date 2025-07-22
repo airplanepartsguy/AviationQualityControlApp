@@ -384,28 +384,105 @@ class CompanyIntegrationsService {
    */
   private async getSalesforceTokens(companyId: string): Promise<{access_token: string, refresh_token?: string} | null> {
     try {
+      console.log(`[CompanyIntegrations] getSalesforceTokens called for company: ${companyId}`);
+      
       // FIRST: Check if tokens are stored in Supabase database (Edge Function stores them there)
       const integration = await this.getIntegration(companyId, 'salesforce');
+      console.log(`[CompanyIntegrations] Integration check:`, {
+        exists: !!integration,
+        hasConfig: !!integration?.config,
+        status: integration?.status,
+        lastTestAt: integration?.last_test_at
+      });
+      
       if (integration && integration.config) {
         const config = integration.config as any;
+        console.log(`[CompanyIntegrations] Config contents:`, {
+          hasClientId: !!config.client_id,
+          hasClientSecret: !!config.client_secret,
+          hasInstanceUrl: !!config.instance_url,
+          hasAccessToken: !!config.access_token,
+          hasRefreshToken: !!config.refresh_token,
+          tokenExpiresAt: config.token_expires_at,
+          tokenReceivedAt: config.token_received_at
+        });
+        
         if (config.access_token) {
           console.log('[CompanyIntegrations] Found OAuth tokens in database for company:', companyId);
+          
+          // Also check if tokens are expired
+          if (config.token_expires_at) {
+            const expiresAt = new Date(config.token_expires_at);
+            const now = new Date();
+            console.log(`[CompanyIntegrations] Token expiry check:`, {
+              expiresAt: expiresAt.toISOString(),
+              now: now.toISOString(),
+              isExpired: expiresAt <= now,
+              minutesRemaining: Math.round((expiresAt.getTime() - now.getTime()) / (1000 * 60))
+            });
+            
+            if (expiresAt <= now) {
+              console.log('[CompanyIntegrations] Database tokens are expired');
+              return null;
+            }
+          }
+          
+          console.log('[CompanyIntegrations] ✅ Returning valid database tokens');
           return {
             access_token: config.access_token,
             refresh_token: config.refresh_token
           };
+        } else {
+          console.log('[CompanyIntegrations] ❌ No access_token found in config');
         }
+      } else {
+        console.log('[CompanyIntegrations] ❌ No integration or config found');
       }
       
-      // FALLBACK: Check if we have OAuth tokens stored in Expo SecureStore
-      const { salesforceOAuthService } = await import('./salesforceOAuthService');
-      const tokens = await salesforceOAuthService.getStoredTokens(companyId);
-      if (tokens && tokens.access_token) {
-        console.log('[CompanyIntegrations] Found OAuth tokens in SecureStore for company:', companyId);
-        return tokens;
+      // FALLBACK: Check if we have OAuth tokens stored in Expo SecureStore (legacy)
+      console.log('[CompanyIntegrations] Checking SecureStore for tokens...');
+      try {
+        const { salesforceOAuthService } = await import('./salesforceOAuthService');
+        const tokens = await salesforceOAuthService.getStoredTokens(companyId);
+        console.log(`[CompanyIntegrations] SecureStore check:`, {
+          hasTokens: !!tokens,
+          hasAccessToken: !!tokens?.access_token,
+          hasRefreshToken: !!tokens?.refresh_token
+        });
+        
+        if (tokens && tokens.access_token) {
+          console.log('[CompanyIntegrations] Found OAuth tokens in SecureStore for company:', companyId);
+          
+          // Check if SecureStore tokens are expired
+          if (tokens.issued_at) {
+            const issuedAt = parseInt(tokens.issued_at);
+            const now = Date.now();
+            const tokenAge = now - issuedAt;
+            const twoHours = 2 * 60 * 60 * 1000;
+            
+            console.log(`[CompanyIntegrations] SecureStore token age check:`, {
+              issuedAt: new Date(issuedAt).toISOString(),
+              now: new Date(now).toISOString(),
+              ageMinutes: Math.round(tokenAge / (1000 * 60)),
+              isExpired: tokenAge >= twoHours
+            });
+            
+            if (tokenAge >= twoHours) {
+              console.log('[CompanyIntegrations] SecureStore tokens are expired');
+              return null;
+            }
+          }
+          
+          console.log('[CompanyIntegrations] ✅ Returning valid SecureStore tokens');
+          return tokens;
+        } else {
+          console.log('[CompanyIntegrations] ❌ No valid tokens in SecureStore');
+        }
+      } catch (secureStoreError) {
+        console.warn('[CompanyIntegrations] Error checking SecureStore:', secureStoreError);
       }
       
-      console.log('[CompanyIntegrations] No OAuth tokens found for company:', companyId);
+      console.log('[CompanyIntegrations] ❌ FINAL RESULT: No valid OAuth tokens found for company:', companyId);
       return null;
     } catch (error) {
       console.error('[CompanyIntegrations] Failed to get Salesforce tokens:', error);

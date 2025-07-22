@@ -11,17 +11,18 @@ let syncQueueDb: SQLite.SQLiteDatabase | null = null;
 
 // Initialize sync queue tables
 export const initializeSyncQueue = async (): Promise<void> => {
-  console.log('[SyncQueue] Initializing sync queue tables...');
-  const db = await openDatabase();
-  
   try {
+    console.log('[SyncQueue] Initializing sync queue tables...');
+    const db = await openDatabase();
+    
+    // First, create tables with all required columns
     await db.execAsync(`
-      -- Sync queue for offline operations
+      -- Sync queue for managing upload operations
       CREATE TABLE IF NOT EXISTS sync_queue (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL, -- 'photo_upload', 'batch_sync', 'pdf_upload', 'data_sync'
-        payload TEXT NOT NULL, -- JSON string of operation data
-        status TEXT DEFAULT 'queued', -- 'queued', 'processing', 'completed', 'failed'
+        type TEXT NOT NULL, -- 'batch', 'photo', 'user_profile', etc.
+        payload TEXT NOT NULL, -- JSON string with data to sync
+        status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'in_progress', 'completed', 'failed'
         attempts INTEGER DEFAULT 0,
         maxAttempts INTEGER DEFAULT 3,
         createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -30,7 +31,23 @@ export const initializeSyncQueue = async (): Promise<void> => {
         error TEXT,
         priority INTEGER DEFAULT 1 -- Higher number = higher priority
       );
-
+    `);
+    
+    // Check if priority column exists and add it if missing
+    console.log('[SyncQueue] Checking priority column...');
+    const tableInfo = await db.getAllAsync("PRAGMA table_info(sync_queue)");
+    const hasPriorityColumn = tableInfo.some((column: any) => column.name === 'priority');
+    
+    if (!hasPriorityColumn) {
+      console.log('[SyncQueue] Adding missing priority column...');
+      await db.execAsync('ALTER TABLE sync_queue ADD COLUMN priority INTEGER DEFAULT 1');
+      console.log('[SyncQueue] Priority column added successfully');
+    } else {
+      console.log('[SyncQueue] Priority column already exists');
+    }
+    
+    // Continue with the rest of the table creation
+    await db.execAsync(`
       -- User sessions for offline tracking
       CREATE TABLE IF NOT EXISTS user_sessions (
         id TEXT PRIMARY KEY,

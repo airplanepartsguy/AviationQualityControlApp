@@ -4,41 +4,150 @@ import { PhotoBatch, PhotoData, PhotoMetadata, AnnotationData } from '../types/d
 import DatabaseMigrationService from './databaseMigrationService';
 import DatabaseResetUtility from '../utils/databaseReset';
 
-const DB_NAME = 'QualityControl.db';
-let db: SQLite.SQLiteDatabase | null = null;
+// Global database instance to prevent multiple connections
+let globalDb: SQLite.SQLiteDatabase | null = null;
+let dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
-// --- Database Initialization ---
+// Opens the database with connection management and timeout protection
 export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
-  if (!db) {
-    try {
-      console.log('[databaseService] Opening database...');
-      
-      // Use safe initialization that handles schema issues automatically
-      db = await DatabaseResetUtility.safeInitialize();
-      
-      console.log('[databaseService] Database opened successfully.');
-      await initializeDatabase(db);
-    } catch (error) {
-      console.error('[databaseService] Failed to open or initialize database:', error);
-      
-      // Try one more time with forced reset
-      try {
-        console.log('[databaseService] Attempting database reset and retry...');
-        await DatabaseResetUtility.resetDatabase();
-        db = await SQLite.openDatabaseAsync(DB_NAME);
-        await DatabaseMigrationService.migrate(db);
-        await initializeDatabase(db);
-        console.log('[databaseService] Database recovery successful');
-      } catch (retryError) {
-        console.error('[databaseService] Database recovery failed:', retryError);
-        throw retryError;
-      }
-    }
+  console.log('[DB_DEBUG] openDatabase: Called');
+  
+  // If we already have a database instance, return it
+  if (globalDb) {
+    console.log('[DB_DEBUG] openDatabase: Using existing database instance');
+    return globalDb;
   }
-  return db;
+  
+  // If there's already a pending open operation, wait for it
+  if (dbOpenPromise) {
+    console.log('[DB_DEBUG] openDatabase: Waiting for existing open operation');
+    return dbOpenPromise;
+  }
+  
+  console.log('[DB_DEBUG] openDatabase: Creating new database connection');
+  
+  // Create a new open operation with timeout protection
+  dbOpenPromise = Promise.race([
+    (async () => {
+      try {
+        console.log('[DB_DEBUG] openDatabase: Opening SQLite database file');
+        const db = await SQLite.openDatabaseAsync('LocalPhotoDatabase.db');
+        console.log('[DB_DEBUG] openDatabase: SQLite database opened successfully');
+        
+        // Set WAL mode for better concurrency
+        console.log('[DB_DEBUG] openDatabase: Setting WAL mode');
+        await db.execAsync('PRAGMA journal_mode = WAL');
+        console.log('[DB_DEBUG] openDatabase: WAL mode set successfully');
+        
+        // Set busy timeout to handle locking
+        console.log('[DB_DEBUG] openDatabase: Setting busy timeout');
+        await db.execAsync('PRAGMA busy_timeout = 5000');
+        console.log('[DB_DEBUG] openDatabase: Busy timeout set successfully');
+        
+        // Run basic table setup (core tables only)
+        console.log('[DB_DEBUG] openDatabase: Setting up core tables');
+        await setupCoreTablesOnly(db);
+        console.log('[DB_DEBUG] openDatabase: Core tables ready');
+        
+        globalDb = db;
+        dbOpenPromise = null; // Clear the promise
+        console.log('[DB_DEBUG] openDatabase: Database ready for immediate use');
+        
+        // Start full initialization in background (non-blocking)
+        console.log('[DB_DEBUG] openDatabase: Starting background initialization');
+        initializeFullDatabase(db).catch(error => {
+          console.error('[DB_DEBUG] Background initialization failed:', error);
+        });
+        
+        return db;
+      } catch (error) {
+        console.error('[DB_DEBUG] openDatabase: Error during database opening:', error);
+        dbOpenPromise = null; // Clear the promise on error
+        throw error;
+      }
+    })(),
+    new Promise<never>((_, reject) => 
+      setTimeout(() => {
+        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 15 seconds');
+        dbOpenPromise = null; // Clear the promise on timeout
+        reject(new Error('Database open timeout'));
+      }, 15000) // Reduced back to 15 seconds since we're only doing core setup
+    )
+  ]);
+  
+  return dbOpenPromise;
 };
 
+// Setup only the core tables needed for basic operations (fast)
+const setupCoreTablesOnly = async (database: SQLite.SQLiteDatabase): Promise<void> => {
+  console.log('[DB_DEBUG] setupCoreTablesOnly: Setting up essential tables...');
+  
+  try {
+    // Run minimal migrations first
+    await DatabaseMigrationService.migrate(database);
+    
+    // Create only the essential tables
+    await database.execAsync(`
+      -- Core photo batches table
+      CREATE TABLE IF NOT EXISTS photo_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        referenceId TEXT,
+        orderNumber TEXT,
+        inventoryId TEXT,
+        userId TEXT NOT NULL,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        status TEXT DEFAULT 'pending',
+        companyId TEXT
+      );
+
+      -- Core photos table  
+      CREATE TABLE IF NOT EXISTS photos (
+        id TEXT PRIMARY KEY,
+        batchId INTEGER NOT NULL,
+        partNumber TEXT,
+        photoTitle TEXT,
+        uri TEXT NOT NULL,
+        metadataJson TEXT NOT NULL,
+        annotationsJson TEXT,
+        syncStatus TEXT DEFAULT 'pending',
+        lastSyncAttempt TEXT,
+        syncError TEXT,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        companyId TEXT,
+        FOREIGN KEY (batchId) REFERENCES photo_batches (id)
+      );
+    `);
+    
+    console.log('[DB_DEBUG] setupCoreTablesOnly: Core tables created successfully');
+  } catch (error) {
+    console.error('[DB_DEBUG] setupCoreTablesOnly: Error setting up core tables:', error);
+    throw error;
+  }
+};
+
+// Full database initialization (runs in background, non-blocking)
+const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<void> => {
+  console.log('[DB_DEBUG] initializeFullDatabase: Starting background initialization...');
+  
+  try {
+    // Setup all remaining tables
+    await setupDatabaseTables(database);
+    
+    console.log('[DB_DEBUG] initializeFullDatabase: Full initialization completed successfully');
+  } catch (error) {
+    console.error('[DB_DEBUG] initializeFullDatabase: Error during full initialization:', error);
+    // Don't throw - this is background initialization
+  }
+};
+
+// Initialize database tables and migrations (legacy function, now calls full init)
 const initializeDatabase = async (database: SQLite.SQLiteDatabase): Promise<void> => {
+  console.log('[DB_DEBUG] initializeDatabase: Redirecting to full initialization...');
+  await initializeFullDatabase(database);
+};
+
+const setupDatabaseTables = async (database: SQLite.SQLiteDatabase): Promise<void> => {
   console.log('[DB_DEBUG] initializeDatabase: Starting initialization...');
   console.log('[databaseService] Initializing database tables...');
   try {
@@ -473,10 +582,10 @@ export const deletePhotoById = async (photoId: string): Promise<void> => {
 
 // Close the database connection (optional, usually managed by Expo)
 export const closeDatabase = async (): Promise<void> => {
-  if (db) {
+  if (globalDb) {
     try {
-      await db.closeAsync();
-      db = null;
+      await globalDb.closeAsync();
+      globalDb = null;
       console.log('[databaseService] Database closed.');
     } catch (error) {
       console.error('[databaseService] Error closing database:', error);
@@ -491,62 +600,146 @@ export const ensureDbOpen = async (): Promise<SQLite.SQLiteDatabase> => {
 
 // Fetches all photos associated with a specific batch ID
 export const getPhotosForBatch = async (batchId: number): Promise<PhotoData[]> => {
-  const db = await openDatabase();
-  // Define an interface for the row structure coming from the DB
-  // Reflects the actual columns in the 'photos' table
-  interface PhotoRow {
-      id: string;
-      batchId: number;
-      partNumber?: string; // Added partNumber, make optional if it can be null
-      photoTitle?: string; // Added photoTitle
-      uri: string;
-      metadataJson: string;
-      annotationsJson?: string;
-      // Add other fields from the photos table if necessary
+  console.log(`[DB_DEBUG] getPhotosForBatch: Called with batchId=${batchId}`);
+  
+  try {
+    console.log(`[DB_DEBUG] getPhotosForBatch: Opening database...`);
+    const db = await openDatabase();
+    console.log(`[DB_DEBUG] getPhotosForBatch: Database opened successfully`);
+    
+    // Define an interface for the row structure coming from the DB
+    // Reflects the actual columns in the 'photos' table
+    interface PhotoRow {
+        id: string;
+        batchId: number;
+        partNumber?: string; // Added partNumber, make optional if it can be null
+        photoTitle?: string; // Added photoTitle
+        uri: string;
+        metadataJson: string;
+        annotationsJson?: string;
+        // Add other fields from the photos table if necessary
+    }
+    
+    console.log(`[DB_DEBUG] getPhotosForBatch: Executing query for batchId=${batchId}`);
+    const queryPromise = db.getAllAsync<PhotoRow>(
+      'SELECT id, batchId, partNumber, photoTitle, uri, metadataJson, annotationsJson FROM photos WHERE batchId = ?', // Explicitly list columns
+      [batchId]
+    );
+    
+    // Add timeout protection
+    const results = await Promise.race([
+      queryPromise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Photos query timeout')), 15000) // Increased from 5 to 15 seconds
+      )
+    ]) as PhotoRow[];
+    
+    console.log(`[DB_DEBUG] getPhotosForBatch: Query returned ${results.length} photos`);
+    console.log(`[DB_DEBUG] getPhotosForBatch: Raw results:`, JSON.stringify(results, null, 2));
+    
+    // Let's also check what photos exist in the database overall (with timeout)
+    console.log(`[DB_DEBUG] getPhotosForBatch: Checking total photos in database...`);
+    const allPhotosPromise = db.getAllAsync('SELECT id, batchId FROM photos');
+    const allPhotos = await Promise.race([
+      allPhotosPromise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Total photos query timeout')), 10000) // Increased from 3 to 10 seconds
+      )
+    ]) as any[];
+    
+    console.log(`[DB_DEBUG] getPhotosForBatch: Total photos in database:`, allPhotos);
+    
+    // Manually parse metadata back into an object
+    const mappedResults = results.map((row: PhotoRow) => ({
+      id: row.id,
+      uri: row.uri,
+      batchId: row.batchId,
+      partNumber: row.partNumber || '', // Provide default or handle potential null
+      photoTitle: row.photoTitle || 'General Picture', // Add photoTitle, default if null
+      metadata: JSON.parse(row.metadataJson || '{}'), // Ensure metadata is parsed from JSON string
+      annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined, // Parse annotations if they exist
+      syncStatus: 'pending' as const // Default sync status since it's not stored in the database
+    }));
+    
+    console.log(`[DB_DEBUG] getPhotosForBatch: Returning ${mappedResults.length} mapped photos`);
+    return mappedResults;
+    
+  } catch (error) {
+    console.error(`[DB_DEBUG] getPhotosForBatch: Error in getPhotosForBatch for batch ${batchId}:`, error);
+    // Return empty array on error to prevent app crash
+    return [];
   }
-  const results = await db.getAllAsync<PhotoRow>(
-    'SELECT id, batchId, partNumber, photoTitle, uri, metadataJson, annotationsJson FROM photos WHERE batchId = ?', // Explicitly list columns
-    [batchId]
-  );
-  // Manually parse metadata back into an object
-  return results.map((row: PhotoRow) => ({
-    id: row.id,
-    uri: row.uri,
-    batchId: row.batchId,
-    partNumber: row.partNumber || '', // Provide default or handle potential null
-    photoTitle: row.photoTitle || 'General Picture', // Add photoTitle, default if null
-    metadata: JSON.parse(row.metadataJson || '{}'), // Ensure metadata is parsed from JSON string
-    annotations: row.annotationsJson ? JSON.parse(row.annotationsJson) : undefined, // Parse annotations if they exist
-    syncStatus: 'pending' // Default sync status since it's not stored in the database
-  }));
 };
 
 // Fetches batch details and all associated photos
 export const getBatchDetails = async (batchId: number): Promise<{ batch: PhotoBatch | null; photos: PhotoData[] }> => {
-  const db = await openDatabase();
-  const batchRow = await db.getFirstAsync<any>('SELECT id, referenceId, orderNumber, inventoryId, userId, createdAt, status FROM photo_batches WHERE id = ?', [batchId]);
-  const photos = await getPhotosForBatch(batchId); // Reuse existing function
+  console.log(`[DB_DEBUG] getBatchDetails: Called with batchId=${batchId}`);
   
-  // If no batch was found, return null
-  if (!batchRow) {
-    return { batch: null, photos };
+  try {
+    const db = await openDatabase();
+    console.log(`[DB_DEBUG] getBatchDetails: Database opened successfully for batch ${batchId}`);
+    
+    // Add timeout protection for the batch query
+    console.log(`[DB_DEBUG] getBatchDetails: Executing batch query for ID ${batchId}`);
+    const batchQueryPromise = db.getFirstAsync<any>(
+      'SELECT id, referenceId, orderNumber, inventoryId, userId, createdAt, status FROM photo_batches WHERE id = ?', 
+      [batchId]
+    );
+    
+    const batchRow = await Promise.race([
+      batchQueryPromise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Batch query timeout')), 15000) // Increased from 5 to 15 seconds
+      )
+    ]) as any;
+    
+    console.log(`[DB_DEBUG] getBatchDetails: Batch query result:`, batchRow);
+    
+    // Add timeout protection for the photos query
+    console.log(`[DB_DEBUG] getBatchDetails: Now fetching photos for batch ${batchId}`);
+    const photosPromise = getPhotosForBatch(batchId);
+    
+    const photos = await Promise.race([
+      photosPromise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Photos query timeout')), 15000) // Increased from 5 to 15 seconds
+      )
+    ]) as PhotoData[];
+    
+    console.log(`[DB_DEBUG] getBatchDetails: Got ${photos.length} photos from getPhotosForBatch`);
+    
+    // If no batch was found, return null
+    if (!batchRow) {
+      console.log(`[DB_DEBUG] getBatchDetails: Batch with ID ${batchId} not found.`);
+      return { batch: null, photos: [] };
+    }
+
+    // Map the database row to a PhotoBatch object
+    const batch: PhotoBatch = {
+      id: batchRow.id,
+      type: batchRow.referenceId?.startsWith('ORD-') ? 'Order' : (batchRow.referenceId?.startsWith('INV-') ? 'Inventory' : (batchRow.orderNumber ? 'Order' : (batchRow.inventoryId ? 'Inventory' : 'Single'))),
+      referenceId: batchRow.referenceId, // Use the direct referenceId
+      orderNumber: batchRow.orderNumber,
+      inventoryId: batchRow.inventoryId,
+      userId: batchRow.userId,
+      createdAt: batchRow.createdAt,
+      status: batchRow.status === 'pending' ? 'InProgress' : 
+              batchRow.status === 'completed' ? 'Completed' : 'Exported',
+      photos: photos
+    };
+
+    console.log(`[DB_DEBUG] getBatchDetails: Returning batch details for ID ${batchId}: batch=${JSON.stringify(batch, null, 2)}, photos.length=${photos.length}`);
+    return { batch, photos };
+    
+  } catch (error) {
+    console.error(`[DB_DEBUG] getBatchDetails: Error in getBatchDetails for batch ${batchId}:`, error);
+    
+    // Return empty result on error to prevent app crash
+    return { 
+      batch: null, 
+      photos: [] 
+    };
   }
-  
-  // Map the database row to a PhotoBatch object
-  const batch: PhotoBatch = {
-    id: batchRow.id,
-    type: batchRow.referenceId?.startsWith('ORD-') ? 'Order' : (batchRow.referenceId?.startsWith('INV-') ? 'Inventory' : (batchRow.orderNumber ? 'Order' : (batchRow.inventoryId ? 'Inventory' : 'Single'))),
-    referenceId: batchRow.referenceId, // Use the direct referenceId
-    orderNumber: batchRow.orderNumber,
-    inventoryId: batchRow.inventoryId,
-    userId: batchRow.userId,
-    createdAt: batchRow.createdAt,
-    status: batchRow.status === 'pending' ? 'InProgress' : 
-            batchRow.status === 'completed' ? 'Completed' : 'Exported',
-    photos: photos
-  };
-  
-  return { batch, photos };
 };
 
 // Deletes a batch and all associated photos
@@ -567,6 +760,7 @@ export const getRecentBatches = async (userId: string, limit: number = 10): Prom
   const db = await openDatabase();
   try {
     // Get batches with photo counts
+    console.log(`[DB_DEBUG] getRecentBatches: Executing query...`);
     const batches = await db.getAllAsync<RawBatchData>(`
       SELECT 
         pb.id, 
@@ -588,7 +782,22 @@ export const getRecentBatches = async (userId: string, limit: number = 10): Prom
         pb.createdAt DESC
       LIMIT ?
     `, [userId, limit]);
+    console.log('[DB_DEBUG] getRecentBatches: Raw query completed, got', batches.length, 'rows');
     console.log('[DB_DEBUG] getRecentBatches: Raw batches from DB:', JSON.stringify(batches, null, 2));
+    
+    if (batches.length === 0) {
+      console.log(`[DB_DEBUG] getRecentBatches: No batches found in database for user ${userId}`);
+      
+      // Let's also check if there are ANY batches in the table
+      const allBatches = await db.getAllAsync('SELECT COUNT(*) as total FROM photo_batches');
+      console.log(`[DB_DEBUG] getRecentBatches: Total batches in database:`, allBatches);
+      
+      // Check if there are batches for this specific user
+      const userBatches = await db.getAllAsync('SELECT COUNT(*) as total FROM photo_batches WHERE userId = ?', [userId]);
+      console.log(`[DB_DEBUG] getRecentBatches: User batches count:`, userBatches);
+      
+      return [];
+    }
     
     const mappedBatches = batches.map(batch => ({
       id: batch.id.toString(), // Convert to string for consistency
@@ -730,4 +939,4 @@ export const getAllPhotoBatchesForUser = async (userId: string): Promise<BatchLi
   }
 };
 
-export { db }; // Export db instance if needed elsewhere, though encapsulation is preferred
+export { globalDb }; // Export db instance if needed elsewhere, though encapsulation is preferred

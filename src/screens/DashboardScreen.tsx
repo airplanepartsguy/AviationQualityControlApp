@@ -81,8 +81,20 @@ const DashboardScreen: React.FC = () => {
   const fetchRecentBatches = async (userId: string) => {
     setIsLoading(true);
     try {
+      console.log(`[DashboardScreen] fetchRecentBatches: Starting with userId=${userId}`);
+      
       const batches = await databaseService.getRecentBatches(userId, 10); // Assuming user.id is guaranteed here by the check above
+      console.log(`[DashboardScreen] fetchRecentBatches: Raw database result:`, batches);
+      
+      if (!batches || batches.length === 0) {
+        console.log(`[DashboardScreen] fetchRecentBatches: No batches found for user ${userId}`);
+        setRecentBatches([]);
+        return;
+      }
+      
       const formattedBatches: RecentBatchItem[] = batches.map(batch => {
+        console.log(`[DashboardScreen] fetchRecentBatches: Processing batch:`, batch);
+        
         let uiStatus: RecentBatchItem['status'] = 'complete'; 
         switch (batch.syncStatus) {
           case 'InProgress': 
@@ -107,7 +119,8 @@ const DashboardScreen: React.FC = () => {
             }
             break;
         }
-        return {
+        
+        const formatted = {
           id: batch.id.toString(),
           referenceId: batch.referenceId || batch.orderNumber || `Batch #${batch.id}`,
           orderNumber: batch.orderNumber || 'N/A', 
@@ -116,11 +129,17 @@ const DashboardScreen: React.FC = () => {
           status: uiStatus,
           type: batch.type || 'Unknown',
         };
+        
+        console.log(`[DashboardScreen] fetchRecentBatches: Formatted batch:`, formatted);
+        return formatted;
       });
+      
+      console.log(`[DashboardScreen] fetchRecentBatches: Setting ${formattedBatches.length} formatted batches`);
       setRecentBatches(formattedBatches);
     } catch (error) {
-      console.error("Error fetching recent batches:", error);
+      console.error("[DashboardScreen] fetchRecentBatches: Error fetching recent batches:", error);
       Alert.alert("Error", "Could not load recent batches.");
+      setRecentBatches([]);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
