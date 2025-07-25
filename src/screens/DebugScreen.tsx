@@ -522,6 +522,162 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
     }
   };
 
+  // Debug OAuth Edge Function specifically
+  const debugOAuthEdgeFunction = async () => {
+    if (!currentCompany) return;
+    setIsLoading(true);
+    
+    try {
+      console.log('\n🔧 === OAUTH EDGE FUNCTION DEBUG ===');
+      console.log(`Company: ${currentCompany.name} (${currentCompany.id})`);
+      
+      // 1. Check Edge Function endpoint availability
+      console.log('\n1️⃣ TESTING EDGE FUNCTION ENDPOINT...');
+      const edgeFunctionUrl = 'https://luwlvmcixwdtuaffamgk.supabase.co/functions/v1/salesforce-oauth-callback';
+      console.log('Edge Function URL:', edgeFunctionUrl);
+      
+      try {
+        const response = await fetch(edgeFunctionUrl, {
+          method: 'OPTIONS',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+        console.log('✅ Edge Function accessible:', response.status, response.statusText);
+      } catch (pingError) {
+        console.log('❌ Edge Function ping failed:', pingError);
+      }
+      
+      // 2. Check oauth_callbacks table for callback results
+      console.log('\n2️⃣ CHECKING OAUTH_CALLBACKS TABLE...');
+      const { data: callbacks, error: callbackError } = await supabase
+        .from('oauth_callbacks')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .order('created_at', { ascending: false })
+        .limit(5);
+      
+      if (callbackError) {
+        console.error('❌ Error fetching oauth_callbacks:', callbackError);
+      } else {
+        console.log(`📋 Found ${callbacks?.length || 0} oauth_callback records:`);
+        callbacks?.forEach((callback, index) => {
+          const now = new Date();
+          const createdAt = new Date(callback.created_at);
+          const minutesAgo = Math.round((now.getTime() - createdAt.getTime()) / (1000 * 60));
+          
+          console.log(`Callback ${index + 1}:`, {
+            id: callback.id.substring(0, 8) + '...',
+            created_at: callback.created_at,
+            minutesAgo: minutesAgo,
+            consumed: callback.consumed,
+            hasAuthCode: !!callback.auth_code,
+            authCodeLength: callback.auth_code?.length,
+            hasError: !!callback.error,
+            error: callback.error,
+            errorDescription: callback.error_description,
+            expiresAt: callback.expires_at
+          });
+        });
+      }
+      
+      // 3. Check company_integrations for token storage
+      console.log('\n3️⃣ CHECKING TOKEN STORAGE IN COMPANY_INTEGRATIONS...');
+      const { data: integration, error: integrationError } = await supabase
+        .from('company_integrations')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .eq('integration_type', 'salesforce')
+        .single();
+      
+      if (integrationError) {
+        console.error('❌ Error fetching integration:', integrationError);
+      } else if (integration) {
+        const config = integration.config as any;
+        const now = new Date();
+        
+        console.log('📋 Integration Status:', {
+          status: integration.status,
+          lastTestAt: integration.last_test_at,
+          lastSyncAt: integration.last_sync_at,
+          updatedAt: integration.updated_at
+        });
+        
+        console.log('📋 Token Status:', {
+          hasAccessToken: !!config.access_token,
+          hasRefreshToken: !!config.refresh_token,
+          tokenType: config.token_type,
+          instanceUrl: config.instance_url,
+          tokenReceivedAt: config.token_received_at,
+          tokenExpiresAt: config.token_expires_at
+        });
+        
+        if (config.token_expires_at) {
+          const expiresAt = new Date(config.token_expires_at);
+          const isExpired = now > expiresAt;
+          const minutesRemaining = Math.round((expiresAt.getTime() - now.getTime()) / (1000 * 60));
+          
+          console.log('📋 Token Expiry:', {
+            expiresAt: expiresAt.toISOString(),
+            isExpired: isExpired,
+            minutesRemaining: minutesRemaining
+          });
+        }
+      }
+      
+      // 4. Generate diagnosis
+      console.log('\n🔍 DIAGNOSIS:');
+      let diagnosis = [];
+      
+      const hasRecentCallback = callbacks?.some(callback => {
+        const createdAt = new Date(callback.created_at);
+        const minutesAgo = (new Date().getTime() - createdAt.getTime()) / (1000 * 60);
+        return minutesAgo < 30; // Created in last 30 minutes
+      });
+      
+      const hasValidTokens = integration?.config && 
+        (integration.config as any).access_token &&
+        (!((integration.config as any).token_expires_at) || 
+         new Date((integration.config as any).token_expires_at) > new Date());
+      
+      if (!hasRecentCallback) {
+        diagnosis.push('❌ No recent OAuth callback - Edge Function may not be receiving callbacks or user did not complete OAuth');
+      } else {
+        diagnosis.push('✅ Recent OAuth callback found - Edge Function is receiving data');
+      }
+      
+      if (!hasValidTokens) {
+        diagnosis.push('❌ No valid tokens - Token exchange likely failed in Edge Function');
+      } else {
+        diagnosis.push('✅ Valid tokens found - OAuth should be working');
+      }
+      
+      const callbackWithError = callbacks?.find(c => c.error);
+      if (callbackWithError) {
+        diagnosis.push(`❌ OAuth error found: ${callbackWithError.error} - ${callbackWithError.error_description}`);
+      }
+      
+      const unconsumedCallback = callbacks?.find(c => !c.consumed && !c.error);
+      if (unconsumedCallback) {
+        diagnosis.push('⚠️ Found unconsumed successful callback - OAuth polling may not be working');
+      }
+      
+      diagnosis.forEach(item => console.log(item));
+      
+      console.log('\n🎉 === EDGE FUNCTION DEBUG COMPLETE ===');
+      
+      Alert.alert(
+        'OAuth Edge Function Debug Complete',
+        `Callbacks: ${callbacks?.length || 0}, Valid Tokens: ${hasValidTokens ? 'Yes' : 'No'}. Check console for detailed diagnosis.`
+      );
+    } catch (error) {
+      console.error('[DebugScreen] OAuth Edge Function debug error:', error);
+      Alert.alert('Debug Error', `Failed to debug Edge Function: ${(error as Error).message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Force clear tokens and restart authentication
   const clearTokensAndReauth = async () => {
     if (!currentCompany) return;
@@ -653,6 +809,15 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
             <CustomButton
               title="Debug OAuth Callback"
               onPress={debugOAuthCallback}
+              disabled={isLoading}
+              variant="secondary"
+              style={styles.button}
+            />
+          </View>
+          <View style={styles.buttonContainer}>
+            <CustomButton
+              title="Debug OAuth Edge Function"
+              onPress={debugOAuthEdgeFunction}
               disabled={isLoading}
               variant="secondary"
               style={styles.button}

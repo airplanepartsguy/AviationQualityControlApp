@@ -29,6 +29,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import salesforceUploadService from '../services/salesforceUploadService';
 import { pdfGenerationService } from '../services/pdfGenerationService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -86,7 +87,6 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
   const [currentBatch, setCurrentBatch] = useState<PhotoData[]>(initialBatch);
 
   // Import additional services for functionality
-  const { AsyncStorage } = require('@react-native-async-storage/async-storage');
 
   // Auto-refresh sync status
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<NodeJS.Timeout | null>(null);
@@ -107,7 +107,17 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       }
     };
     loadSavedViewMode();
-  }, []);
+
+    // Safety reset: Clear loading state if it gets stuck
+    const loadingTimeout = setTimeout(() => {
+      if (isLoading) {
+        console.log('[BatchPreview] 🚨 SAFETY RESET: Loading state was stuck, resetting...');
+        setIsLoading(false);
+      }
+    }, 5000); // 5 second safety timeout
+
+    return () => clearTimeout(loadingTimeout);
+  }, [isLoading]);
 
   // Enhanced toggle view mode with persistence
   const toggleViewMode = useCallback(async () => {
@@ -139,39 +149,78 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
 
   // Enhanced fetch batch details with real sync status
   const fetchBatchDetails = useCallback(async () => {
-    if (isLoading) return; // Prevent concurrent fetches
+    console.log(`[BatchPreview] 🔍 fetchBatchDetails called - current loading state: ${isLoading}`);
     
+    // Always set loading to true and reset any stuck state
     setIsLoading(true);
+    console.log(`[BatchPreview] ⏳ Set loading to true, starting fetch...`);
+    
     try {
-      console.log(`[BatchPreviewScreen] Fetching batch details for batch ${batchId}`);
+      console.log(`[BatchPreview] 📊 Fetching batch details for batch: ${batchId} (type: ${typeof batchId})`);
       
       // Parse batchId correctly
       const numericBatchId = typeof batchId === 'string' ? parseInt(batchId, 10) : batchId;
+      console.log(`[BatchPreview] 🔢 Parsed batchId: ${numericBatchId} (type: ${typeof numericBatchId})`);
+      
+      if (isNaN(numericBatchId)) {
+        throw new Error(`Invalid batchId: ${batchId} - cannot parse to number`);
+      }
       
       // Small delay to allow background saves
       await new Promise(resolve => setTimeout(resolve, 100));
+      console.log(`[BatchPreview] ⏱️ Background save delay completed`);
       
       // Get batch details with photos
-      const { batch, photos } = await databaseService.getBatchDetails(numericBatchId);
+      console.log(`[BatchPreview] 🗄️ Calling databaseService.getBatchDetails...`);
+      const result = await databaseService.getBatchDetails(numericBatchId);
+      console.log(`[BatchPreview] 📤 Database query completed:`, {
+        hasBatch: !!result.batch,
+        photosCount: result.photos.length,
+        batchInfo: result.batch ? {
+          id: result.batch.id,
+          orderNumber: result.batch.orderNumber,
+          inventoryId: result.batch.inventoryId
+        } : null
+      });
       
-      console.log(`[BatchPreviewScreen] Fetched batch with ${photos.length} photos`);
+      const { batch, photos } = result;
+      
+      console.log(`[BatchPreview] 📷 Raw photos from database:`, photos.map(p => ({
+        id: p.id,
+        uri: p.uri,
+        metadata: !!p.metadata,
+        annotations: !!p.annotations
+      })));
       
       // Map database photos to PhotoData with real sync status
-      const mappedPhotos: PhotoData[] = photos.map(photo => ({
-        id: photo.id,
-        uri: photo.uri,
-        batchId: photo.batchId,
-        partNumber: photo.partNumber,
-        photoTitle: photo.photoTitle,
-        orderNumber: batch?.orderNumber,
-        inventoryId: batch?.inventoryId,
-        metadata: photo.metadata || {},
-        annotations: photo.annotations || undefined,
-        syncStatus: photo.syncStatus as 'pending' | 'synced' | 'error',
-        annotationSavedUri: photo.annotationSavedUri
-      }));
+      console.log(`[BatchPreview] 🔄 Mapping ${photos.length} photos...`);
+      const mappedPhotos: PhotoData[] = photos.map((photo, index) => {
+        console.log(`[BatchPreview] 📷 Mapping photo ${index + 1}:`, {
+          id: photo.id,
+          hasUri: !!photo.uri,
+          hasMetadata: !!photo.metadata,
+          hasAnnotations: !!photo.annotations
+        });
+        
+        return {
+          id: photo.id,
+          uri: photo.uri,
+          batchId: photo.batchId,
+          partNumber: photo.partNumber,
+          photoTitle: photo.photoTitle,
+          orderNumber: batch?.orderNumber,
+          inventoryId: batch?.inventoryId,
+          metadata: photo.metadata || {},
+          annotations: photo.annotations || undefined,
+          syncStatus: photo.syncStatus as 'pending' | 'synced' | 'error',
+          annotationSavedUri: photo.annotationSavedUri
+        };
+      });
+
+      console.log(`[BatchPreview] ✅ Successfully mapped ${mappedPhotos.length} photos`);
 
       // Update state with real data
+      console.log(`[BatchPreview] 🔄 Updating component state...`);
       setBatchDetails({
         photos: mappedPhotos,
         orderNumber: batch?.orderNumber,
@@ -180,6 +229,8 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       });
       
       setCurrentBatch(mappedPhotos);
+      console.log(`[BatchPreview] ✅ State updated successfully with ${mappedPhotos.length} photos`);
+      console.log(`[BatchPreview] 🎉 PHOTOS SHOULD NOW BE VISIBLE IN UI!`);
       
       // Clear any error states from upload status
       if (uploadStatus.status === 'error') {
@@ -187,13 +238,24 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       }
       
     } catch (error) {
-      console.error(`[BatchPreviewScreen] Error fetching batch details:`, error);
-      Alert.alert('Error', `Failed to load batch details: ${(error as Error).message}`);
+      console.error(`[BatchPreview] ❌ Error in fetchBatchDetails:`, error);
+      console.error(`[BatchPreview] ❌ Error stack:`, (error as Error).stack);
+      
+      Alert.alert(
+        'Loading Error', 
+        `Failed to load batch details: ${(error as Error).message}\n\nBatch ID: ${batchId}`,
+        [
+          { text: 'Retry', onPress: () => fetchBatchDetails() },
+          { text: 'Go Back', onPress: () => navigation.goBack() }
+        ]
+      );
     } finally {
+      console.log(`[BatchPreview] 🏁 Setting loading to false`);
       setIsLoading(false);
       setRefreshing(false);
+      console.log(`[BatchPreview] 🏁 fetchBatchDetails completed`);
     }
-  }, [batchId, user, isLoading, uploadStatus.status]);
+  }, [batchId, user, uploadStatus.status, navigation]);
 
   // Auto-refresh sync status every 30 seconds
   useEffect(() => {
@@ -242,15 +304,16 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
   useFocusEffect(
     useCallback(() => {
       console.log(`[BatchPreviewScreen] Screen focused, refreshing batch ${batchId}`);
-      fetchBatchDetails();
-    }, [fetchBatchDetails])
+      // Small delay to prevent conflict with mount effect
+      setTimeout(() => fetchBatchDetails(), 100);
+    }, [fetchBatchDetails, batchId])
   );
 
-  // Initial load effect
+  // Initial load effect - only run once on mount
   useEffect(() => {
     console.log('[BatchPreview] Component mounted, loading initial data');
     fetchBatchDetails();
-  }, []);
+  }, []); // Empty dependency array - only run once
 
   // Cleanup effect for auto-refresh
   useEffect(() => {
@@ -1027,23 +1090,200 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
             />
           </View>
         ) : !isLoading && currentBatch.length > 0 ? (
-            <FlatList
-              data={currentBatch}
-              renderItem={viewMode === 'list' ? renderPhotoItem : renderGridPhotoItem}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.listContentContainer}
-              numColumns={viewMode === 'grid' ? 2 : 1}
-              key={viewMode} // Force re-render when switching between list/grid
-              columnWrapperStyle={viewMode === 'grid' ? styles.gridRow : undefined}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={handleRefresh}
-                  colors={[COLORS.primary]}
-                />
+          <FlatList
+            data={currentBatch}
+            renderItem={({ item, index }) => {
+              const isSelected = selectedPhotos.has(item.id);
+              const photoHasDefects = hasDefects(item);
+              const syncInfo = getSyncStatusInfo(item);
+
+              // Grid view renderer
+              if (viewMode === 'grid') {
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.gridPhotoContainer,
+                      isSelected && styles.selectedGridPhoto
+                    ]}
+                    onPress={() => {
+                      if (selectionMode === 'select') {
+                        togglePhotoSelection(item.id);
+                      } else {
+                        navigation.navigate('DefectHighlighting', { photo: item });
+                      }
+                    }}
+                  >
+                    <Image source={{ uri: item.uri }} style={styles.gridThumbnail} />
+                    
+                    {/* Grid Photo Badge */}
+                    <View style={styles.gridPhotoBadge}>
+                      <Text style={styles.gridPhotoBadgeText}>#{index + 1}</Text>
+                    </View>
+                    
+                    {/* Selection Indicator for Grid */}
+                    {selectionMode === 'select' && (
+                      <View style={styles.gridSelectionOverlay}>
+                        <View style={[styles.selectionCheckbox, isSelected && styles.selectedCheckbox]}>
+                          {isSelected && (
+                            <Ionicons name="checkmark" size={14} color={COLORS.white} />
+                          )}
+                        </View>
+                      </View>
+                    )}
+                    
+                    {/* Grid Status Indicators */}
+                    <View style={styles.gridStatusRow}>
+                      {photoHasDefects && (
+                        <View style={styles.gridStatusBadge}>
+                          <Ionicons name="warning" size={10} color={COLORS.warning} />
+                        </View>
+                      )}
+                      {syncInfo.status === 'synced' && (
+                        <View style={[styles.gridStatusBadge, styles.gridSyncedBadge]}>
+                          <Ionicons name="checkmark-circle" size={10} color={COLORS.success} />
+                        </View>
+                      )}
+                      {syncInfo.status === 'error' && (
+                        <View style={[styles.gridStatusBadge, styles.gridErrorBadge]}>
+                          <Ionicons name="alert-circle" size={10} color={COLORS.error} />
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                );
               }
-            />
-        ) : null}
+
+              // List view renderer
+              return (
+                <View style={[
+                  styles.modernPhotoCard,
+                  isSelected && styles.selectedPhotoCard
+                ]}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (selectionMode === 'select') {
+                        togglePhotoSelection(item.id);
+                      } else {
+                        navigation.navigate('DefectHighlighting', { photo: item });
+                      }
+                    }}
+                    activeOpacity={0.9}
+                  >
+                    <View style={styles.photoContainer}>
+                      {/* Large Thumbnail */}
+                      <View style={styles.thumbnailContainer}>
+                        <Image source={{ uri: item.uri }} style={styles.modernThumbnail} />
+                        
+                        {/* Selection Overlay */}
+                        {selectionMode === 'select' && (
+                          <View style={styles.selectionOverlay}>
+                            <View style={[styles.selectionCheckbox, isSelected && styles.selectedCheckbox]}>
+                              {isSelected && (
+                                <Ionicons name="checkmark" size={16} color={COLORS.white} />
+                              )}
+                            </View>
+                          </View>
+                        )}
+                        
+                        {/* Photo Number Badge */}
+                        <View style={styles.photoBadge}>
+                          <Text style={styles.photoBadgeText}>#{index + 1}</Text>
+                        </View>
+                      </View>
+
+                      {/* Enhanced Photo Info */}
+                      <View style={styles.modernPhotoInfo}>
+                        <Text style={styles.photoTitle}>
+                          {item.orderNumber || item.inventoryId || `Photo ${index + 1}`}
+                        </Text>
+                        <Text style={styles.photoSubtitle}>
+                          {item.metadata?.timestamp ? new Date(item.metadata.timestamp).toLocaleString() : 'No timestamp'}
+                        </Text>
+                        
+                        {/* Status Indicators */}
+                        <View style={styles.statusRow}>
+                          {photoHasDefects && (
+                            <View style={styles.modernDefectIndicator}>
+                              <Ionicons name="warning" size={12} color={COLORS.warning} />
+                              <Text style={styles.defectLabel}>Defect</Text>
+                            </View>
+                          )}
+                          <TouchableOpacity 
+                            style={[
+                              styles.syncIndicator,
+                              syncInfo.status === 'synced' && styles.syncedIndicator,
+                              syncInfo.status === 'error' && styles.errorIndicator,
+                              styles.tappableSyncIndicator
+                            ]}
+                            onPress={() => {
+                              if (syncInfo.status === 'error' || syncInfo.status === 'pending') {
+                                triggerPhotoSync(item);
+                              }
+                            }}
+                            disabled={syncInfo.status === 'synced'}
+                          >
+                            <Ionicons name={syncInfo.icon} size={12} color={syncInfo.color} />
+                            <Text style={[
+                              styles.syncLabel,
+                              syncInfo.status === 'synced' && styles.syncedLabel,
+                              syncInfo.status === 'error' && styles.errorLabel
+                            ]}>
+                              {syncInfo.label}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+
+                      {/* Modern Action Buttons */}
+                      {selectionMode === 'none' && (
+                        <View style={styles.modernPhotoActions}>
+                          <TouchableOpacity 
+                            style={[styles.modernActionButton, styles.editButton]}
+                            onPress={() => handleAnnotatePhoto(item)}
+                          >
+                            <Ionicons name="create-outline" size={18} color={COLORS.primary} />
+                          </TouchableOpacity>
+                          <TouchableOpacity 
+                            style={[styles.modernActionButton, styles.deleteButton]}
+                            onPress={() => handleDeletePhoto(item.id)}
+                          >
+                            <Ionicons name="trash-outline" size={18} color={COLORS.error} />
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              );
+            }}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContentContainer}
+            numColumns={viewMode === 'grid' ? 2 : 1}
+            key={`${viewMode}-${currentBatch.length}`}
+            columnWrapperStyle={viewMode === 'grid' ? styles.gridRow : undefined}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                colors={[COLORS.primary]}
+              />
+            }
+            removeClippedSubviews={false}
+            maxToRenderPerBatch={10}
+            windowSize={10}
+          />
+        ) : (
+          <View style={styles.debugContainer}>
+            <Text style={styles.debugText}>
+              Debug: isLoading={isLoading.toString()}, photos={currentBatch.length}
+            </Text>
+            {currentBatch.length > 0 && (
+              <Text style={styles.debugText}>
+                First photo: {currentBatch[0]?.id?.substring(0, 8)}...
+              </Text>
+            )}
+          </View>
+        )}
 
         {/* Modern Footer with Enhanced Buttons */}
         <View style={styles.modernFooter}>
@@ -1760,6 +2000,20 @@ const styles = StyleSheet.create({
      fontSize: FONTS.small,
      marginTop: SPACING.tiny,
      textAlign: 'center',
+   },
+   
+   // Debug styles
+   debugContainer: {
+     flex: 1,
+     justifyContent: 'center',
+     alignItems: 'center',
+     padding: SPACING.large,
+   },
+   debugText: {
+     fontSize: FONTS.medium,
+     color: COLORS.textLight,
+     textAlign: 'center',
+     marginBottom: SPACING.small,
    },
  });
 

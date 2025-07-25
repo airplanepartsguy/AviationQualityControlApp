@@ -159,7 +159,7 @@ serve(async (req) => {
           console.log('🔍 Looking for PKCE code verifier in oauth_state table...')
           console.log('Query parameters:', { company_id: state, integration_type: 'salesforce' })
           
-          const { data: oauthState, error: stateError } = await supabase
+          let { data: oauthState, error: stateError } = await supabase
             .from('oauth_state')
             .select('*')
             .eq('company_id', state)
@@ -173,10 +173,58 @@ serve(async (req) => {
             expiresAt: oauthState?.expires_at
           })
           
+          // ENHANCED: Try to find ANY oauth_state record for this company if single query fails
           if (stateError || !oauthState?.code_verifier) {
-            const errorMsg = `CRITICAL: No PKCE code verifier found for company ${state}. Error: ${stateError?.message || 'No data'}. Cannot proceed with token exchange.`
-            console.error(errorMsg)
-            throw new Error(errorMsg)
+            console.log('🔍 Single query failed, searching for ANY oauth_state records...')
+            
+            const { data: allStates, error: allStatesError } = await supabase
+              .from('oauth_state')
+              .select('*')
+              .eq('company_id', state)
+              .eq('integration_type', 'salesforce')
+              .order('created_at', { ascending: false })
+            
+            console.log('All oauth_state records found:', {
+              count: allStates?.length || 0,
+              records: allStates?.map(s => ({
+                id: s.id.substring(0, 8) + '...',
+                created_at: s.created_at,
+                expires_at: s.expires_at,
+                hasCodeVerifier: !!s.code_verifier,
+                verifierLength: s.code_verifier?.length
+              }))
+            })
+            
+            // Try to use the most recent valid record
+            const validState = allStates?.find(s => s.code_verifier && new Date(s.expires_at) > new Date())
+            
+            if (validState) {
+              console.log('✅ Found valid oauth_state record, using it:', {
+                id: validState.id.substring(0, 8) + '...',
+                created_at: validState.created_at,
+                expires_at: validState.expires_at,
+                verifierLength: validState.code_verifier.length
+              })
+              
+              // Use this state
+              oauthState = validState
+              stateError = null
+            } else {
+              const errorMsg = `CRITICAL: No valid PKCE code verifier found for company ${state}. 
+                Original error: ${stateError?.message || 'No single record'}
+                Total records found: ${allStates?.length || 0}
+                Valid records: ${allStates?.filter(s => s.code_verifier && new Date(s.expires_at) > new Date()).length || 0}
+                Cannot proceed with token exchange.`
+              console.error(errorMsg)
+              
+              // Store detailed error for debugging
+              await supabase.from('oauth_callbacks').update({
+                error: 'pkce_not_found',
+                error_description: `No PKCE verifier found. Records: ${allStates?.length || 0}`
+              }).eq('company_id', state).eq('consumed', false)
+              
+              throw new Error(errorMsg)
+            }
           }
           
           const codeVerifier = oauthState.code_verifier
@@ -231,13 +279,54 @@ serve(async (req) => {
           console.log('Token response:', responseText.substring(0, 200) + '...')
           
           if (!tokenResponse.ok) {
-            throw new Error(`Token exchange failed: ${tokenResponse.status} ${responseText}`)
+            // ENHANCED: Better error handling for token exchange failures
+            let errorDetails = `Token exchange failed: ${tokenResponse.status} ${responseText}`
+            
+            try {
+              const errorJson = JSON.parse(responseText)
+              if (errorJson.error) {
+                errorDetails = `${errorJson.error}: ${errorJson.error_description || 'No description'}`
+              }
+            } catch (parseError) {
+              // Response is not JSON, use as-is
+            }
+            
+            console.error('❌ Token exchange failed:', errorDetails)
+            
+            // Store detailed error in callback for debugging
+            await supabase.from('oauth_callbacks').update({
+              error: 'token_exchange_failed',
+              error_description: errorDetails
+            }).eq('company_id', state).eq('consumed', false)
+            
+            throw new Error(errorDetails)
           }
           
-          const tokens = JSON.parse(responseText)
+          let tokens
+          try {
+            tokens = JSON.parse(responseText)
+          } catch (parseError) {
+            const errorMsg = `Invalid JSON response from Salesforce: ${responseText.substring(0, 200)}`
+            console.error('❌ JSON parse error:', errorMsg)
+            
+            await supabase.from('oauth_callbacks').update({
+              error: 'invalid_json_response',
+              error_description: errorMsg
+            }).eq('company_id', state).eq('consumed', false)
+            
+            throw new Error(errorMsg)
+          }
           
           if (!tokens.access_token) {
-            throw new Error('No access token in response')
+            const errorMsg = `No access token in response: ${JSON.stringify(tokens)}`
+            console.error('❌ Missing access token:', errorMsg)
+            
+            await supabase.from('oauth_callbacks').update({
+              error: 'missing_access_token',
+              error_description: errorMsg
+            }).eq('company_id', state).eq('consumed', false)
+            
+            throw new Error(errorMsg)
           }
           
           console.log('✅ Tokens received successfully:', {

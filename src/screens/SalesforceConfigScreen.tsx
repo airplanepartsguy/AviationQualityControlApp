@@ -342,6 +342,25 @@ const SalesforceConfigScreen: React.FC = () => {
       console.log(`[SalesforceConfig] OAuth token check attempt ${pollCount}/${maxPolls}`);
       
       try {
+        // ENHANCED: Check oauth_callbacks table directly for completed OAuth
+        const { data: recentCallbacks, error: callbackError } = await supabase
+          .from('oauth_callbacks')
+          .select('*')
+          .eq('company_id', companyId)
+          .is('error', null)
+          .eq('consumed', false)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        
+        if (recentCallbacks && recentCallbacks.length > 0) {
+          console.log('[SalesforceConfig] Found successful OAuth callback! Checking for tokens...');
+          
+          // Mark callback as consumed
+          await supabase
+            .from('oauth_callbacks')
+            .update({ consumed: true })
+            .eq('id', recentCallbacks[0].id);
+        }
         // Check both database and SecureStore for debugging
         const integration = await companyIntegrationsService.getIntegration(companyId, 'salesforce');
         console.log('[SalesforceConfig] Integration check:', {
