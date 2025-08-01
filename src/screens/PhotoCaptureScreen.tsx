@@ -1442,52 +1442,71 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
           throw new Error(`Photo ${newPhotoId} was not found after INSERT - database save may have failed`);
         }
         
-        // UPLOAD TO SUPABASE BUCKET (NEW: Fix for missing bucket uploads)
+        // UPLOAD TO COMPANY-SPECIFIC STORAGE (Multi-tenant safe)
         if (companyId && currentBatch.referenceId) {
           try {
-            console.log(`[PCS_DEBUG] processAndSavePhoto: Starting Supabase bucket upload for photo ${newPhotoId}`);
+            console.log(`[PCS_DEBUG] processAndSavePhoto: Starting company storage upload for photo ${newPhotoId}`);
             
             const fileName = `${newPhotoId}_${Date.now()}.jpg`;
-            const publicUrl = await uploadPhoto(
+            const { companyStorageService } = await import('../services/companyStorageService');
+            
+            const uploadResult = await companyStorageService.uploadPhoto(
               photoDataToSave.uri,
               fileName,
               companyId,
               currentBatch.referenceId
             );
             
-            console.log(`[PCS_DEBUG] processAndSavePhoto: Photo uploaded to Supabase bucket successfully: ${publicUrl}`);
-            
-            // Update photo record with public URL
-            await database.runAsync(
-              'UPDATE photos SET supabaseUrl = ? WHERE id = ?',
-              [publicUrl, newPhotoId]
-            );
-            
-            // Update sync status to uploaded
-            await database.runAsync(
-              'UPDATE photos SET syncStatus = ? WHERE id = ?',
-              ['uploaded', newPhotoId]
-            );
-            
-            logAnalyticsEvent('photo_uploaded_to_supabase', { 
-              batchId: currentBatch.id, 
-              photoId: newPhotoId, 
-              companyId,
-              referenceId: currentBatch.referenceId
-            });
+            if (uploadResult.success) {
+              console.log(`[PCS_DEBUG] processAndSavePhoto: Company storage upload successful for photo ${newPhotoId}`);
+              console.log(`[PCS_DEBUG] Upload details:`, {
+                url: uploadResult.url,
+                localPath: uploadResult.localPath,
+                provider: uploadResult.metadata?.provider,
+                bucket: uploadResult.bucket
+              });
+              
+              // Update photo record with storage URL
+              const storageUrl = uploadResult.url || uploadResult.localPath || '';
+              if (storageUrl) {
+                await database.runAsync(
+                  'UPDATE photos SET supabaseUrl = ? WHERE id = ?',
+                  [storageUrl, newPhotoId]
+                );
+              }
+              
+              // Update sync status to uploaded
+              await database.runAsync(
+                'UPDATE photos SET syncStatus = ? WHERE id = ?',
+                ['uploaded', newPhotoId]
+              );
+              
+              logAnalyticsEvent('photo_uploaded_to_storage', { 
+                batchId: currentBatch.id, 
+                photoId: newPhotoId, 
+                companyId,
+                referenceId: currentBatch.referenceId,
+                provider: uploadResult.metadata?.provider,
+                bucket: uploadResult.bucket,
+                encrypted: uploadResult.metadata?.encrypted
+              });
+              
+            } else {
+              throw new Error(uploadResult.error || 'Upload failed without specific error');
+            }
             
           } catch (uploadError) {
-            console.error(`[PCS_DEBUG] processAndSavePhoto: Supabase upload failed for photo ${newPhotoId}:`, uploadError);
+            console.error(`[PCS_DEBUG] processAndSavePhoto: Company storage upload failed for photo ${newPhotoId}:`, uploadError);
             console.error(`[PCS_DEBUG] Upload error details:`, JSON.stringify(uploadError, null, 2));
             
-            // Enhanced Supabase error logging
-            const { logSupabaseError } = await import('../utils/errorLogger');
-            const uploadErrorId = logSupabaseError(uploadError, 'photo_upload_during_capture', {
+            // Enhanced storage error logging
+            const { logError } = await import('../utils/errorLogger');
+            const uploadErrorId = logError(uploadError, {
               userId,
               companyId: currentCompany?.id,
               batchId: currentBatch.id,
               photoId: newPhotoId,
-              operation: 'processAndSavePhoto_supabase_upload',
+              operation: 'processAndSavePhoto_company_storage_upload',
               additionalData: {
                 photoUri: photo.uri,
                 selectedPhotoTitle,
@@ -1495,7 +1514,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
                 referenceId: currentBatch.referenceId,
                 batchType: currentBatch.type
               }
-            });
+            }, 'high', 'storage');
             
             console.error(`🔥 [CRITICAL] Photo upload failed! Error ID: ${uploadErrorId}`);
             
