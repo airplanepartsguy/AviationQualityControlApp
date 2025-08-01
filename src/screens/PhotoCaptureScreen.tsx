@@ -1220,6 +1220,21 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
     } catch (error) {
       console.error(`[PCS_DEBUG] handleScannedIdSubmit: Error during batch creation for ${cleanId}:`, error);
       
+      // Enhanced error logging with context
+      const { logError, logDatabaseError } = await import('../utils/errorLogger');
+      const errorId = logDatabaseError(error, 'batch_creation', {
+        userId,
+        companyId: currentCompany?.id,
+        operation: 'handleScannedIdSubmit',
+        scannedId: cleanId,
+        additionalData: { 
+          cleanId,
+          originalId: scannedId,
+          isLoading,
+          mounted: mountedRef.current
+        }
+      });
+      
       if (!mountedRef.current) return;
       
       // Specific error handling
@@ -1227,16 +1242,17 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
       if (error instanceof Error) {
         if (error.message.includes('timed out')) {
           errorMessage = 'Database Timeout - Please Try Again';
+          console.error(`🔥 [CRITICAL] Database timeout during batch creation! Error ID: ${errorId}`);
           // Reset database connection on timeout
           try {
             const { DatabaseResetUtility } = await import('../utils/databaseReset');
             console.log('[PCS_DEBUG] Attempting database reset after timeout...');
             // Don't await this - let it run in background
             DatabaseResetUtility.resetDatabase().catch((resetError: Error) => 
-              console.error('[PCS_DEBUG] Database reset failed:', resetError)
+              logError(resetError, { operation: 'database_reset_after_timeout' }, 'critical', 'database_recovery')
             );
           } catch (resetError) {
-            console.error('[PCS_DEBUG] Could not import database reset utility:', resetError);
+            logError(resetError, { operation: 'import_database_reset_utility' }, 'high', 'system');
           }
         } else if (error.message.includes('database')) {
           errorMessage = 'Database Error - Please Restart App';
@@ -1462,6 +1478,26 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             
           } catch (uploadError) {
             console.error(`[PCS_DEBUG] processAndSavePhoto: Supabase upload failed for photo ${newPhotoId}:`, uploadError);
+            console.error(`[PCS_DEBUG] Upload error details:`, JSON.stringify(uploadError, null, 2));
+            
+            // Enhanced Supabase error logging
+            const { logSupabaseError } = await import('../utils/errorLogger');
+            const uploadErrorId = logSupabaseError(uploadError, 'photo_upload_during_capture', {
+              userId,
+              companyId: currentCompany?.id,
+              batchId: currentBatch.id,
+              photoId: newPhotoId,
+              operation: 'processAndSavePhoto_supabase_upload',
+              additionalData: {
+                photoUri: photo.uri,
+                selectedPhotoTitle,
+                fileName: `photo_${newPhotoId}.jpg`,
+                referenceId: currentBatch.referenceId,
+                batchType: currentBatch.type
+              }
+            });
+            
+            console.error(`🔥 [CRITICAL] Photo upload failed! Error ID: ${uploadErrorId}`);
             
             // Update sync status to failed but don't block the UI
             await database.runAsync(
@@ -1472,6 +1508,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             logAnalyticsEvent('photo_upload_failed', { 
               batchId: currentBatch.id, 
               photoId: newPhotoId, 
+              errorId: uploadErrorId,
               error: uploadError instanceof Error ? uploadError.message : String(uploadError)
             });
           }

@@ -352,9 +352,27 @@ export const uploadPhoto = async (
     // Read the file as base64
     const response = await fetch(photoUri);
     if (!response || !response.ok) {
-      throw new Error(`Failed to fetch photo from URI: ${photoUri}. Status: ${response?.status || 'No response'}`);
+      const fetchError = new Error(`Failed to fetch photo from URI: ${photoUri}. Status: ${response?.status || 'No response'}`);
+      
+      // Enhanced error logging for fetch failures
+      const { logNetworkError } = await import('../utils/errorLogger');
+      logNetworkError(fetchError, photoUri, 'GET', {
+        companyId,
+        operation: 'fetch_photo_for_upload',
+        additionalData: { 
+          fileName, 
+          scannedId, 
+          bucket,
+          responseStatus: response?.status,
+          responseOk: response?.ok
+        }
+      });
+      
+      throw fetchError;
     }
     const blob = await response.blob();
+    
+    console.log(`[SupabaseService] Blob created, size: ${blob.size} bytes`);
     
     const { data, error } = await supabase.storage
       .from(bucket)
@@ -365,6 +383,23 @@ export const uploadPhoto = async (
 
     if (error) {
       console.error('[SupabaseService] Photo upload error:', error.message);
+      console.error('[SupabaseService] Full error details:', JSON.stringify(error, null, 2));
+      
+      // Enhanced Supabase error logging
+      const { logSupabaseError } = await import('../utils/errorLogger');
+      logSupabaseError(error, 'photo_upload', {
+        companyId,
+        operation: 'upload_photo_to_storage',
+        additionalData: {
+          fileName,
+          scannedId,
+          bucket,
+          storagePath,
+          blobSize: blob.size,
+          uploadConfig: { cacheControl: '3600', upsert: true }
+        }
+      });
+      
       throw error;
     }
 
@@ -377,6 +412,28 @@ export const uploadPhoto = async (
     return publicUrl;
   } catch (error) {
     console.error('[SupabaseService] Photo upload failed:', error);
+    console.error('[SupabaseService] Upload context:', {
+      photoUri,
+      fileName,
+      companyId,
+      scannedId,
+      bucket
+    });
+    
+    // Final catch-all error logging
+    const { logSupabaseError } = await import('../utils/errorLogger');
+    logSupabaseError(error, 'photo_upload_failed', {
+      companyId,
+      operation: 'uploadPhoto',
+      additionalData: {
+        photoUri,
+        fileName,
+        scannedId,
+        bucket,
+        errorType: error instanceof Error ? error.constructor.name : typeof error
+      }
+    });
+    
     throw error;
   }
 };
