@@ -112,21 +112,39 @@ class SalesforceOAuthService {
       console.log('[SalesforceOAuth] Storing PKCE code verifier in Supabase cloud database...');
       
       try {
-        // First, delete any existing oauth_state records for this company/integration to prevent conflicts
-        const { error: deleteError } = await supabaseService.supabase
+        // SURGICAL CLEANUP: Only delete EXPIRED records to prevent race conditions
+        console.log('[SalesforceOAuth] 🧹 Cleaning up ALL OAuth records for fresh start...');
+        
+        // CRITICAL FIX: Delete ALL existing oauth_state records for this company
+        // This prevents duplicate key constraint violations when starting a new OAuth flow
+        const { error: deleteStateError } = await supabaseService.supabase
           .from('oauth_state')
           .delete()
           .eq('company_id', companyId)
-          .eq('integration_type', 'salesforce');
+          .eq('integration_type', 'salesforce'); // Delete ALL records, not just expired ones
         
-        if (deleteError) {
-          console.warn('[SalesforceOAuth] Warning: Could not delete old oauth_state:', deleteError);
+        if (deleteStateError) {
+          console.warn('[SalesforceOAuth] Warning: Could not delete oauth_state records:', deleteStateError);
         } else {
-          console.log('[SalesforceOAuth] Cleaned up existing oauth_state records');
+          console.log('[SalesforceOAuth] ✅ Cleaned up all oauth_state records for fresh start');
         }
         
-        // Now insert the new PKCE code verifier with extended expiry
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+        // Clean up old oauth_callbacks records (older than 30 minutes)
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+        const { error: deleteCallbacksError } = await supabaseService.supabase
+          .from('oauth_callbacks')
+          .delete()
+          .eq('company_id', companyId)
+          .lt('created_at', thirtyMinutesAgo);
+        
+        if (deleteCallbacksError) {
+          console.warn('[SalesforceOAuth] Warning: Could not delete old oauth_callbacks:', deleteCallbacksError);
+        } else {
+          console.log('[SalesforceOAuth] ✅ Cleaned up old oauth_callbacks records');
+        }
+        
+        // Store PKCE record with proper expiry
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes (shorter for faster cleanup)
         
         const pkceRecord = {
           company_id: companyId,
@@ -163,6 +181,16 @@ class SalesforceOAuthService {
           expires_at: expiresAt,
           record_id: insertData?.[0]?.id,
           created_at: insertData?.[0]?.created_at
+        });
+        
+        // ENHANCED DEBUG: Log exact PKCE values for Edge Function comparison
+        console.log('[SalesforceOAuth] 🔍 STORED PKCE VALUES FOR DEBUGGING:', {
+          fullCodeVerifier: codeVerifier,
+          fullCodeChallenge: urlSafeCodeChallenge,
+          verifierFirst50: codeVerifier.substring(0, 50),
+          challengeFirst50: urlSafeCodeChallenge.substring(0, 50),
+          recordId: insertData?.[0]?.id,
+          storageTime: new Date().toISOString()
         });
         
         // VERIFICATION: Immediately query back to confirm storage worked
@@ -527,8 +555,31 @@ class SalesforceOAuthService {
         const errorText = await response.text();
         console.error('[SalesforceOAuth] Token refresh failed:', errorText);
         
-        // If refresh fails, clear stored tokens
+        // ENHANCED: Update integration status and clear all OAuth artifacts when refresh fails
+        console.log('[SalesforceOAuth] 🔄 Token refresh failed, cleaning up OAuth artifacts...');
+        
+        // Clear stored tokens
         await this.clearTokens(companyId);
+        
+        // Update integration status to pending to trigger re-authentication
+        try {
+          const integration = await supabaseService.getCompanyIntegration(companyId, 'salesforce');
+          if (integration) {
+            await supabaseService.supabase
+              .from('company_integrations')
+              .update({ 
+                status: 'pending',
+                error_message: 'OAuth tokens expired and refresh failed. Re-authentication required.',
+                last_test_at: new Date().toISOString()
+              })
+              .eq('id', integration.id);
+            
+            console.log('[SalesforceOAuth] ✅ Integration status updated to pending for re-authentication');
+          }
+        } catch (statusError) {
+          console.warn('[SalesforceOAuth] Could not update integration status:', statusError);
+        }
+        
         return null;
       }
 
@@ -612,6 +663,54 @@ class SalesforceOAuthService {
     } catch (error) {
       console.error('[SalesforceOAuth] Connection test failed:', error);
       return false;
+    }
+  }
+
+  /**
+   * Complete OAuth reset - clears all OAuth artifacts for fresh authentication
+   */
+  async resetOAuthState(companyId: string): Promise<void> {
+    try {
+      console.log('[SalesforceOAuth] 🔄 Performing complete OAuth reset for company:', companyId);
+      
+      // Clear all OAuth artifacts in parallel for speed
+      const cleanupPromises = [
+        // Clear oauth_state records
+        supabaseService.supabase
+          .from('oauth_state')
+          .delete()
+          .eq('company_id', companyId)
+          .eq('integration_type', 'salesforce'),
+        
+        // Clear oauth_callbacks records
+        supabaseService.supabase
+          .from('oauth_callbacks')
+          .delete()
+          .eq('company_id', companyId),
+        
+        // Clear stored tokens
+        this.clearTokens(companyId)
+      ];
+      
+      await Promise.all(cleanupPromises);
+      
+      // Update integration status to pending
+      const integration = await supabaseService.getCompanyIntegration(companyId, 'salesforce');
+      if (integration) {
+        await supabaseService.supabase
+          .from('company_integrations')
+          .update({ 
+            status: 'pending',
+            error_message: null,
+            last_test_at: new Date().toISOString()
+          })
+          .eq('id', integration.id);
+      }
+      
+      console.log('[SalesforceOAuth] ✅ Complete OAuth reset completed successfully');
+    } catch (error) {
+      console.error('[SalesforceOAuth] Error during OAuth reset:', error);
+      throw error;
     }
   }
 

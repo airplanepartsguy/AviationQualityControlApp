@@ -1,0 +1,4 @@
+[function]
+name = "salesforce-oauth-callback"
+verify_jwt = false
+timeout = 60 

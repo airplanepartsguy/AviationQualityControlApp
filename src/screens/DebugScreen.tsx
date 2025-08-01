@@ -403,6 +403,156 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
     }
   };
 
+  // Debug PKCE details comprehensively
+  const debugPKCEDetails = async () => {
+    if (!currentCompany) return;
+    setIsLoading(true);
+    
+    try {
+      console.log('\n🔍 === COMPREHENSIVE PKCE DEBUG ===');
+      console.log(`Company: ${currentCompany.name} (${currentCompany.id})`);
+      
+      // 1. Show all oauth_state records
+      console.log('\n1️⃣ ALL OAUTH_STATE RECORDS...');
+      const { data: allStates, error: statesError } = await supabase
+        .from('oauth_state')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .eq('integration_type', 'salesforce')
+        .order('created_at', { ascending: false });
+        
+      if (statesError) {
+        console.error('❌ Error fetching oauth states:', statesError);
+      } else {
+        console.log(`📋 Found ${allStates?.length || 0} oauth_state records:`);
+        allStates?.forEach((state, index) => {
+          const now = new Date();
+          const createdAt = new Date(state.created_at);
+          const expiresAt = new Date(state.expires_at);
+          const minutesOld = Math.round((now.getTime() - createdAt.getTime()) / (1000 * 60));
+          const minutesToExpiry = Math.round((expiresAt.getTime() - now.getTime()) / (1000 * 60));
+          
+          console.log(`Record ${index + 1}:`, {
+            id: state.id.substring(0, 8) + '...',
+            created_at: state.created_at,
+            expires_at: state.expires_at,
+            minutesOld: minutesOld,
+            minutesToExpiry: minutesToExpiry,
+            expired: minutesToExpiry <= 0,
+            hasCodeVerifier: !!state.code_verifier,
+            verifierLength: state.code_verifier?.length,
+            verifierPreview: state.code_verifier?.substring(0, 20) + '...'
+          });
+        });
+      }
+      
+      // 2. Simulate Edge Function PKCE lookup
+      console.log('\n2️⃣ SIMULATING EDGE FUNCTION PKCE LOOKUP...');
+      
+      // Try single query first (what Edge Function does)
+      const { data: singleState, error: singleError } = await supabase
+        .from('oauth_state')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .eq('integration_type', 'salesforce')
+        .single();
+        
+      console.log('Single query result:', {
+        found: !!singleState,
+        error: singleError?.message,
+        hasCodeVerifier: !!singleState?.code_verifier,
+        verifierLength: singleState?.code_verifier?.length,
+        verifierPreview: singleState?.code_verifier?.substring(0, 20) + '...',
+        created_at: singleState?.created_at,
+        expires_at: singleState?.expires_at
+      });
+      
+      // Try latest query (fallback in Edge Function)
+      const { data: latestState, error: latestError } = await supabase
+        .from('oauth_state')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .eq('integration_type', 'salesforce')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+        
+      console.log('Latest query result:', {
+        found: !!latestState,
+        error: latestError?.message,
+        hasCodeVerifier: !!latestState?.code_verifier,
+        verifierLength: latestState?.code_verifier?.length,
+        verifierPreview: latestState?.code_verifier?.substring(0, 20) + '...',
+        created_at: latestState?.created_at,
+        expires_at: latestState?.expires_at,
+        isExpired: latestState ? new Date(latestState.expires_at) <= new Date() : null,
+        minutesOld: latestState ? Math.round((new Date().getTime() - new Date(latestState.created_at).getTime()) / (1000 * 60)) : null
+      });
+      
+      // 3. Show recent oauth_callbacks with PKCE errors
+      console.log('\n3️⃣ RECENT OAUTH CALLBACKS WITH ERRORS...');
+      const { data: errorCallbacks, error: callbacksError } = await supabase
+        .from('oauth_callbacks')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .not('error', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(5);
+        
+      if (callbacksError) {
+        console.error('❌ Error fetching callbacks:', callbacksError);
+      } else {
+        console.log(`📋 Found ${errorCallbacks?.length || 0} error callbacks:`);
+        errorCallbacks?.forEach((callback, index) => {
+          const minutesAgo = Math.round((new Date().getTime() - new Date(callback.created_at).getTime()) / (1000 * 60));
+          console.log(`Error ${index + 1}:`, {
+            error: callback.error,
+            description: callback.error_description,
+            created_at: callback.created_at,
+            minutesAgo: minutesAgo,
+            hasAuthCode: !!callback.auth_code,
+            authCodeLength: callback.auth_code?.length
+          });
+        });
+      }
+      
+      // 4. Test actual PKCE retrieval and comparison
+      console.log('\n4️⃣ TESTING EXACT PKCE RETRIEVAL...');
+      const { data: testRecord, error: testError } = await supabase
+        .from('oauth_state')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .eq('integration_type', 'salesforce')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+        
+      if (testError) {
+        console.error('❌ Error retrieving test record:', testError);
+      } else if (testRecord) {
+        console.log('🔍 EXACT PKCE RETRIEVAL TEST:');
+        console.log('Full retrieved verifier:', testRecord.code_verifier);
+        console.log('Full retrieved challenge:', testRecord.code_challenge);
+        console.log('Verifier length:', testRecord.code_verifier?.length);
+        console.log('Challenge length:', testRecord.code_challenge?.length);
+        console.log('Record ID:', testRecord.id);
+        
+        // Test if verifier matches expected format (base64url)
+        const verifierRegex = /^[A-Za-z0-9_~-]+$/;
+        const challengeRegex = /^[A-Za-z0-9_-]+$/;
+        console.log('Verifier format valid:', verifierRegex.test(testRecord.code_verifier || ''));
+        console.log('Challenge format valid:', challengeRegex.test(testRecord.code_challenge || ''));
+      }
+
+      console.log('\n🎉 === PKCE DEBUG COMPLETE ===');
+    } catch (error) {
+      console.error('❌ PKCE debug failed:', error);
+      Alert.alert('Debug Error', `Failed to debug PKCE: ${(error as Error).message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Debug OAuth callback process
   const debugOAuthCallback = async () => {
     if (!currentCompany) return;
@@ -683,70 +833,27 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
     if (!currentCompany) return;
     
     Alert.alert(
-      'Clear Tokens & Re-authenticate',
-      'This will clear all stored Salesforce tokens and force you to authenticate again. Continue?',
+      'Complete OAuth Reset & Re-authenticate',
+      'This will perform a complete OAuth reset (clear all tokens, state, and callback records) and force you to authenticate again. This fixes most OAuth issues. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
-          text: 'Clear & Re-auth', 
+          text: 'Reset & Re-auth', 
           style: 'destructive',
           onPress: async () => {
             try {
               setIsLoading(true);
-              console.log('\n🧹 === CLEARING TOKENS AND RE-AUTHENTICATING ===');
+              console.log('\n🔄 === COMPLETE OAUTH RESET ===');
               
-              // 1. Clear tokens from company integration
-              console.log('1️⃣ Clearing tokens from company integration...');
-              const { error: updateError } = await supabase
-                .from('company_integrations')
-                .update({
-                  config: {
-                    client_id: undefined,
-                    client_secret: undefined,
-                    instance_url: undefined,
-                    sandbox: false
-                    // Remove all token-related fields
-                  },
-                  status: 'pending',
-                  error_message: 'Tokens cleared - re-authentication required',
-                  last_test_at: new Date().toISOString()
-                })
-                .eq('company_id', currentCompany.id)
-                .eq('integration_type', 'salesforce');
-                
-              if (updateError) {
-                console.error('Error clearing tokens:', updateError);
-                throw updateError;
-              }
+              // Use the new comprehensive resetOAuthState method
+              const { salesforceOAuthService } = await import('../services/salesforceOAuthService');
+              await salesforceOAuthService.resetOAuthState(currentCompany.id);
               
-              // 2. Clear OAuth callbacks
-              console.log('2️⃣ Clearing OAuth callbacks...');
-              const { error: callbackError } = await supabase
-                .from('oauth_callbacks')
-                .delete()
-                .eq('company_id', currentCompany.id);
-                
-              if (callbackError) {
-                console.error('Error clearing callbacks:', callbackError);
-              }
-              
-              // 3. Clear OAuth state
-              console.log('3️⃣ Clearing OAuth state...');
-              const { error: stateError } = await supabase
-                .from('oauth_state')
-                .delete()
-                .eq('company_id', currentCompany.id)
-                .eq('integration_type', 'salesforce');
-                
-              if (stateError) {
-                console.error('Error clearing oauth state:', stateError);
-              }
-              
-              console.log('✅ All tokens and OAuth data cleared successfully!');
+              console.log('✅ Complete OAuth reset completed successfully!');
               
               Alert.alert(
-                'Tokens Cleared!',
-                'All Salesforce tokens have been cleared. Please go to Settings > Salesforce Config to set up and authenticate again.',
+                'OAuth Reset Complete!',
+                'All Salesforce OAuth artifacts have been cleared (tokens, state, callbacks). The integration status has been reset to pending. Please go to Settings > Salesforce Config to re-authenticate.',
                 [{ text: 'OK' }]
               );
               
@@ -823,9 +930,18 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
               style={styles.button}
             />
           </View>
+          <View style={styles.buttonContainer}>
+            <CustomButton
+              title="Debug PKCE Details"
+              onPress={debugPKCEDetails}
+              disabled={isLoading}
+              variant="secondary"
+              style={styles.button}
+            />
+          </View>
         <View style={styles.buttonContainer}>
           <CustomButton
-            title="Clear Tokens & Re-auth"
+            title="Complete OAuth Reset"
             onPress={clearTokensAndReauth}
             disabled={isLoading}
             variant="danger"
