@@ -23,6 +23,8 @@ import {
   savePhoto,
   getBatchDetails,
   openDatabase,
+  addPhotoToSyncQueue,
+  updateBatchPhotoCount,
 } from '../services/databaseService';
 import { PhotoCaptureScreenNavigationProp, PhotoCaptureScreenRouteProp } from '../types/navigation';
 import * as MediaLibrary from 'expo-media-library';
@@ -1442,97 +1444,62 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
           throw new Error(`Photo ${newPhotoId} was not found after INSERT - database save may have failed`);
         }
         
-        // UPLOAD TO COMPANY-SPECIFIC STORAGE (Multi-tenant safe)
+        // ADD TO SYNC QUEUE FOR LATER UPLOAD (Deferred upload approach)
         if (companyId && currentBatch.referenceId) {
           try {
-            console.log(`[PCS_DEBUG] processAndSavePhoto: Starting company storage upload for photo ${newPhotoId}`);
+            console.log(`[PCS_DEBUG] processAndSavePhoto: Adding photo ${newPhotoId} to sync queue for later upload`);
             
-            const fileName = `${newPhotoId}_${Date.now()}.jpg`;
-            const { companyStorageService } = await import('../services/companyStorageService');
+            // Add to photo sync queue for background upload
+            await addPhotoToSyncQueue({
+              id: newPhotoId,
+              batchId: currentBatch.id,
+              partNumber: currentBatch.referenceId,
+              photoTitle: selectedPhotoTitle,
+              uri: photoDataToSave.uri,
+              metadata: photoDataToSave.metadata,
+              annotations: [],
+              localPath: photoDataToSave.uri,
+              uploadStatus: 'pending',
+              cloudUrl: null
+            });
             
-            const uploadResult = await companyStorageService.uploadPhoto(
-              photoDataToSave.uri,
-              fileName,
-              companyId,
-              currentBatch.referenceId
+            // Update sync status to pending (will be uploaded later)
+            await database.runAsync(
+              'UPDATE photos SET syncStatus = ? WHERE id = ?',
+              ['pending', newPhotoId]
             );
             
-            if (uploadResult.success) {
-              console.log(`[PCS_DEBUG] processAndSavePhoto: Company storage upload successful for photo ${newPhotoId}`);
-              console.log(`[PCS_DEBUG] Upload details:`, {
-                url: uploadResult.url,
-                localPath: uploadResult.localPath,
-                provider: uploadResult.metadata?.provider,
-                bucket: uploadResult.bucket
-              });
-              
-              // Update photo record with storage URL
-              const storageUrl = uploadResult.url || uploadResult.localPath || '';
-              if (storageUrl) {
-                await database.runAsync(
-                  'UPDATE photos SET supabaseUrl = ? WHERE id = ?',
-                  [storageUrl, newPhotoId]
-                );
-              }
-              
-              // Update sync status to uploaded
-              await database.runAsync(
-                'UPDATE photos SET syncStatus = ? WHERE id = ?',
-                ['uploaded', newPhotoId]
-              );
-              
-              logAnalyticsEvent('photo_uploaded_to_storage', { 
-                batchId: currentBatch.id, 
-                photoId: newPhotoId, 
-                companyId,
-                referenceId: currentBatch.referenceId,
-                provider: uploadResult.metadata?.provider,
-                bucket: uploadResult.bucket,
-                encrypted: uploadResult.metadata?.encrypted
-              });
-              
-            } else {
-              throw new Error(uploadResult.error || 'Upload failed without specific error');
-            }
+            logAnalyticsEvent('photo_queued_for_upload', { 
+              batchId: currentBatch.id, 
+              photoId: newPhotoId, 
+              companyId,
+              referenceId: currentBatch.referenceId
+            });
             
-          } catch (uploadError) {
-            console.error(`[PCS_DEBUG] processAndSavePhoto: Company storage upload failed for photo ${newPhotoId}:`, uploadError);
-            console.error(`[PCS_DEBUG] Upload error details:`, JSON.stringify(uploadError, null, 2));
+            console.log(`[PCS_DEBUG] processAndSavePhoto: Photo ${newPhotoId} successfully queued for upload`);
             
-            // Enhanced storage error logging
+          } catch (queueError) {
+            console.error(`[PCS_DEBUG] processAndSavePhoto: Failed to add photo ${newPhotoId} to sync queue:`, queueError);
+            
+            // Log queue error but don't block the UI
             const { logError } = await import('../utils/errorLogger');
-            const uploadErrorId = logError(uploadError, {
+            const queueErrorId = logError(queueError, {
               userId,
               companyId: currentCompany?.id,
               batchId: currentBatch.id,
               photoId: newPhotoId,
-              operation: 'processAndSavePhoto_company_storage_upload',
+              operation: 'processAndSavePhoto_sync_queue',
               additionalData: {
                 photoUri: photo.uri,
                 selectedPhotoTitle,
-                fileName: `photo_${newPhotoId}.jpg`,
-                referenceId: currentBatch.referenceId,
-                batchType: currentBatch.type
+                referenceId: currentBatch.referenceId
               }
-            }, 'high', 'storage');
+            }, 'medium', 'sync');
             
-            console.error(`🔥 [CRITICAL] Photo upload failed! Error ID: ${uploadErrorId}`);
-            
-            // Update sync status to failed but don't block the UI
-            await database.runAsync(
-              'UPDATE photos SET syncStatus = ? WHERE id = ?',
-              ['upload_failed', newPhotoId]
-            );
-            
-            logAnalyticsEvent('photo_upload_failed', { 
-              batchId: currentBatch.id, 
-              photoId: newPhotoId, 
-              errorId: uploadErrorId,
-              error: uploadError instanceof Error ? uploadError.message : String(uploadError)
-            });
+            console.warn(`⚠️ [WARNING] Failed to queue photo for upload! Error ID: ${queueErrorId}`);
           }
         } else {
-          console.warn(`[PCS_DEBUG] processAndSavePhoto: Cannot upload to Supabase - missing companyId (${companyId}) or referenceId (${currentBatch.referenceId})`);
+          console.warn(`[PCS_DEBUG] processAndSavePhoto: Cannot queue for upload - missing companyId (${companyId}) or referenceId (${currentBatch.referenceId})`);
         }
         
       } catch (error) {

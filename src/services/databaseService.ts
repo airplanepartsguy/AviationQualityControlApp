@@ -8,13 +8,15 @@ import { errorLogger } from '../utils/errorLogger';
 // Global database instance to prevent multiple connections
 let globalDb: SQLite.SQLiteDatabase | null = null;
 let dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let dbQueue: (() => void)[] = []; // Queue for database operations
+let isInitializing = false;
 
 // Opens the database with connection management and timeout protection
 export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   console.log('[DB_DEBUG] openDatabase: Called');
   
   // If we already have a database instance, return it
-  if (globalDb) {
+  if (globalDb && !isInitializing) {
     console.log('[DB_DEBUG] openDatabase: Using existing database instance');
     return globalDb;
   }
@@ -26,8 +28,8 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   }
   
   console.log('[DB_DEBUG] openDatabase: Creating new database connection');
+  isInitializing = true;
   
-  // Create a new open operation with timeout protection
   dbOpenPromise = Promise.race([
     (async () => {
       try {
@@ -45,25 +47,41 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         await db.execAsync('PRAGMA busy_timeout = 30000');
         console.log('[DB_DEBUG] openDatabase: Busy timeout set successfully');
         
+        // Enable connection sharing for better concurrency
+        console.log('[DB_DEBUG] openDatabase: Configuring connection sharing');
+        await db.execAsync('PRAGMA read_uncommitted = true');
+        await db.execAsync('PRAGMA synchronous = NORMAL');
+        console.log('[DB_DEBUG] openDatabase: Connection sharing configured');
+        
         // Run basic table setup (core tables only)
         console.log('[DB_DEBUG] openDatabase: Setting up core tables');
         await setupCoreTablesOnly(db);
         console.log('[DB_DEBUG] openDatabase: Core tables ready');
         
         globalDb = db;
+        isInitializing = false;
         dbOpenPromise = null; // Clear the promise
         console.log('[DB_DEBUG] openDatabase: Database ready for immediate use');
         
-        // Start full initialization in background (non-blocking)
-        console.log('[DB_DEBUG] openDatabase: Starting background initialization');
-        initializeFullDatabase(db).catch(error => {
-          console.error('[DB_DEBUG] Background initialization failed:', error);
-          // Don't fail the main database connection for background initialization failures
-        });
+        // Process any queued operations
+        console.log(`[DB_DEBUG] openDatabase: Processing ${dbQueue.length} queued operations`);
+        const queuedOps = [...dbQueue];
+        dbQueue = [];
+        queuedOps.forEach(op => op());
+        
+        // Start full initialization in background (non-blocking) with delay
+        console.log('[DB_DEBUG] openDatabase: Scheduling background initialization');
+        setTimeout(() => {
+          initializeFullDatabase(db).catch(error => {
+            console.error('[DB_DEBUG] Background initialization failed:', error);
+            // Don't fail the main database connection for background initialization failures
+          });
+        }, 2000); // 2 second delay to allow immediate operations to complete
         
         return db;
       } catch (error) {
         console.error('[DB_DEBUG] openDatabase: Error during database opening:', error);
+        isInitializing = false;
         dbOpenPromise = null; // Clear the promise on error
         
         // Log database connection errors
@@ -79,17 +97,18 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
     new Promise<never>((_, reject) => 
       setTimeout(() => {
         const timeoutError = new Error('Database open timeout - please try restarting the app');
-        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 30 seconds');
+        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 45 seconds');
+        isInitializing = false;
         dbOpenPromise = null; // Clear the promise on timeout
         
         // Log timeout errors
         errorLogger.logDatabaseError(timeoutError, 'openDatabase', { 
           operation: 'database_timeout',
-          additionalData: { phase: 'timeout', timeoutDuration: 30000 }
+          additionalData: { phase: 'timeout', timeoutDuration: 45000 }
         });
         
         reject(timeoutError);
-      }, 30000) // Increased from 15 to 30 seconds
+      }, 45000) // Increased from 30 to 45 seconds
     )
   ]);
   
@@ -136,6 +155,20 @@ const setupCoreTablesOnly = async (database: SQLite.SQLiteDatabase): Promise<voi
         companyId TEXT,
         FOREIGN KEY (batchId) REFERENCES photo_batches (id)
       );
+
+      -- Photo sync queue table for deferred uploads
+      CREATE TABLE IF NOT EXISTS photo_sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        photo_id TEXT NOT NULL,
+        batch_id INTEGER NOT NULL,
+        local_path TEXT NOT NULL,
+        upload_status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        retry_count INTEGER DEFAULT 0,
+        last_attempt TEXT,
+        error_message TEXT,
+        UNIQUE(photo_id)
+      );
     `);
     
     console.log('[DB_DEBUG] setupCoreTablesOnly: Core tables created successfully');
@@ -150,12 +183,26 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
   console.log('[DB_DEBUG] initializeFullDatabase: Starting background initialization...');
   
   try {
+    // Add a small delay to ensure primary operations complete first
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
     // Setup all remaining tables
     await setupDatabaseTables(database);
     
     console.log('[DB_DEBUG] initializeFullDatabase: Full initialization completed successfully');
   } catch (error) {
     console.error('[DB_DEBUG] initializeFullDatabase: Error during full initialization:', error);
+    
+    // Log background initialization errors
+    errorLogger.logDatabaseError(
+      error instanceof Error ? error : new Error('Background initialization failed'),
+      'initializeFullDatabase',
+      { 
+        operation: 'background_initialization',
+        additionalData: { phase: 'full_initialization' }
+      }
+    );
+    
     // Don't throw - this is background initialization
   }
 };
@@ -959,3 +1006,66 @@ export const getAllPhotoBatchesForUser = async (userId: string): Promise<BatchLi
 };
 
 export { globalDb }; // Export db instance if needed elsewhere, though encapsulation is preferred
+
+// Add photo to sync queue for later upload
+export const addPhotoToSyncQueue = async (photoData: PhotoData): Promise<void> => {
+  console.log('[DB_DEBUG] addPhotoToSyncQueue: Adding photo to sync queue', photoData.id);
+  
+  try {
+    const db = await openDatabase();
+    
+    // Insert into photo_sync_queue table
+    await db.runAsync(`
+      INSERT OR REPLACE INTO photo_sync_queue (
+        photo_id, batch_id, local_path, upload_status, 
+        created_at, retry_count, last_attempt
+      ) VALUES (?, ?, ?, 'pending', ?, 0, NULL)
+    `, [photoData.id, photoData.batchId, photoData.uri, new Date().toISOString()]);
+    
+    console.log('[DB_DEBUG] addPhotoToSyncQueue: Photo added to sync queue successfully');
+  } catch (error) {
+    console.error('[DB_DEBUG] addPhotoToSyncQueue: Error adding photo to sync queue:', error);
+    
+    // Log sync queue errors
+    errorLogger.logDatabaseError(
+      error instanceof Error ? error : new Error('Failed to add photo to sync queue'),
+      'addPhotoToSyncQueue',
+      { 
+        operation: 'photo_sync_queue',
+        additionalData: { photoId: photoData.id, batchId: photoData.batchId }
+      }
+    );
+    
+    throw error;
+  }
+};
+
+// Update batch photo count
+export const updateBatchPhotoCount = async (batchId: string, newCount: number): Promise<void> => {
+  console.log('[DB_DEBUG] updateBatchPhotoCount: Updating batch photo count', { batchId, newCount });
+  
+  try {
+    const db = await openDatabase();
+    
+    await db.runAsync(`
+      UPDATE photo_batches 
+      SET photoCount = ?, updated_at = ?
+      WHERE id = ?
+    `, [newCount, new Date().toISOString(), batchId]);
+    
+    console.log('[DB_DEBUG] updateBatchPhotoCount: Batch photo count updated successfully');
+  } catch (error) {
+    console.error('[DB_DEBUG] updateBatchPhotoCount: Error updating batch photo count:', error);
+    
+    errorLogger.logDatabaseError(
+      error instanceof Error ? error : new Error('Failed to update batch photo count'),
+      'updateBatchPhotoCount',
+      { 
+        operation: 'batch_update',
+        additionalData: { batchId, newCount }
+      }
+    );
+    
+    throw error;
+  }
+};
