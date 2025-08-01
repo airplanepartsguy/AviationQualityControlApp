@@ -760,8 +760,18 @@ class SalesforceOAuthService {
    */
   private async storeTokens(companyId: string, tokens: SalesforceTokens): Promise<void> {
     try {
-      const key = `${this.SECURE_STORE_PREFIX}${companyId}`;
+      // Validate companyId for SecureStore key
+      if (!companyId || typeof companyId !== 'string' || companyId.trim() === '') {
+        throw new Error('Invalid company ID for token storage');
+      }
+      
+      // Clean the companyId to ensure it only contains valid characters for SecureStore
+      const cleanCompanyId = companyId.replace(/[^a-zA-Z0-9.\-_]/g, '');
+      const key = `${this.SECURE_STORE_PREFIX}${cleanCompanyId}`;
+      
+      console.log('[SalesforceOAuth] Storing tokens with key:', key);
       await SecureStore.setItemAsync(key, JSON.stringify(tokens));
+      console.log('[SalesforceOAuth] Tokens stored successfully');
     } catch (error) {
       console.error('[SalesforceOAuth] Error storing tokens:', error);
       throw error;
@@ -773,7 +783,21 @@ class SalesforceOAuthService {
    */
   async getStoredTokens(companyId: string): Promise<SalesforceTokens | null> {
     try {
-      const key = `${this.SECURE_STORE_PREFIX}${companyId}`;
+      // Validate companyId to ensure it's a valid SecureStore key
+      if (!companyId || typeof companyId !== 'string' || companyId.trim() === '') {
+        console.error('[SalesforceOAuth] Invalid company ID for SecureStore key:', companyId);
+        return null;
+      }
+      
+      // Clean the companyId to ensure it only contains valid characters for SecureStore
+      const cleanCompanyId = companyId.replace(/[^a-zA-Z0-9.\-_]/g, '');
+      if (cleanCompanyId !== companyId) {
+        console.warn('[SalesforceOAuth] Cleaned company ID from', companyId, 'to', cleanCompanyId);
+      }
+      
+      const key = `${this.SECURE_STORE_PREFIX}${cleanCompanyId}`;
+      console.log('[SalesforceOAuth] Getting tokens with key:', key);
+      
       const tokensJson = await SecureStore.getItemAsync(key);
       return tokensJson ? JSON.parse(tokensJson) : null;
     } catch (error) {
@@ -787,8 +811,18 @@ class SalesforceOAuthService {
    */
   private async clearTokens(companyId: string): Promise<void> {
     try {
-      const key = `${this.SECURE_STORE_PREFIX}${companyId}`;
+      // Validate and clean companyId
+      if (!companyId || typeof companyId !== 'string' || companyId.trim() === '') {
+        console.warn('[SalesforceOAuth] Invalid company ID for token clearing:', companyId);
+        return;
+      }
+      
+      const cleanCompanyId = companyId.replace(/[^a-zA-Z0-9.\-_]/g, '');
+      const key = `${this.SECURE_STORE_PREFIX}${cleanCompanyId}`;
+      
+      console.log('[SalesforceOAuth] Clearing tokens with key:', key);
       await SecureStore.deleteItemAsync(key);
+      console.log('[SalesforceOAuth] Tokens cleared successfully');
     } catch (error) {
       console.error('[SalesforceOAuth] Error clearing tokens:', error);
     }

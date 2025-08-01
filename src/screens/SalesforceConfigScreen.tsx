@@ -1,40 +1,40 @@
 import React, { useState, useEffect } from 'react';
-import { useRoute } from '@react-navigation/native';
 import {
   View,
   Text,
-  TextInput,
-  TouchableOpacity,
   StyleSheet,
   ScrollView,
   Alert,
   Switch,
   ActivityIndicator,
   SafeAreaView,
+  TouchableOpacity,
+  StatusBar,
 } from 'react-native';
 import { Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
-import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, CARD_STYLES } from '../styles/theme';
-import companyIntegrationsService, { SalesforceConfig, CompanyIntegration } from '../services/companyIntegrationsService';
+import companyIntegrationsService, { SalesforceConfig } from '../services/companyIntegrationsService';
 import { salesforceOAuthService } from '../services/salesforceOAuthService';
-import { supabase } from '../services/supabaseService';
 import { RootStackParamList } from '../types/navigation';
 import CustomButton from '../components/CustomButton';
 import CustomInput from '../components/CustomInput';
 
 type SalesforceConfigScreenNavigationProp = StackNavigationProp<RootStackParamList>;
 
+type ConnectionStatus = 'idle' | 'testing' | 'success' | 'error';
+type ConfigurationStep = 'setup' | 'test' | 'authenticate' | 'complete';
+
 const SalesforceConfigScreen: React.FC = () => {
   const navigation = useNavigation<SalesforceConfigScreenNavigationProp>();
-  const route = useRoute();
   const { user } = useAuth();
   const { currentCompany } = useCompany();
   
+  // Configuration state
   const [config, setConfig] = useState<SalesforceConfig>({
     instance_url: '',
     client_id: '',
@@ -48,156 +48,221 @@ const SalesforceConfigScreen: React.FC = () => {
       photo: 'Custom_Photo__c'
     },
     field_mappings: {
-      batch_id: 'Batch_ID__c',
-      created_date: 'Created_Date__c',
-      company_id: 'Company_ID__c',
-      identifier: 'Identifier__c',
-      identifier_type: 'Identifier_Type__c',
-      total_photos: 'Total_Photos__c',
-      photo_id: 'Photo_ID__c',
-      batch_reference: 'Photo_Batch__c',
-      file_name: 'File_Name__c',
-      file_size: 'File_Size__c',
-      capture_date: 'Capture_Date__c'
-    }
+      batch_name: 'Name',
+      batch_type: 'Type__c',
+      photo_url: 'Photo_URL__c'
+    },
+    prefix_mappings: {}
   });
 
+  // UI state
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
-  const [isAuthenticating, setIsAuthenticating] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'connected' | 'failed'>('unknown');
-  const [testResults, setTestResults] = useState<{
-    success: boolean;
-    message: string;
-    details?: any;
-  } | null>(null);
-
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
+  const [currentStep, setCurrentStep] = useState<ConfigurationStep>('setup');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  
+  // Status and feedback
+  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [lastTestTime, setLastTestTime] = useState<string>('');
 
   useEffect(() => {
-    loadConfig();
+    loadExistingConfiguration();
   }, [currentCompany?.id]);
 
-  // Handle OAuth callback from deep link
-  useEffect(() => {
-    const handleOAuthCallback = async () => {
-      const params = route.params as any;
-      if (params?.code && params?.state && currentCompany?.id) {
-        console.log('[SalesforceConfig] Processing OAuth callback:', {
-          code: params.code.substring(0, 10) + '...',
-          state: params.state,
-          companyId: currentCompany.id
-        });
-        
-        try {
-          setIsAuthenticating(true);
-          
-          // Exchange authorization code for access token
-          // Use the authorization code from the deep link parameters
-          const authCode = params.code;
-          
-          // Get the company integration to retrieve OAuth config
-          const integration = await companyIntegrationsService.getIntegration(currentCompany.id, 'salesforce');
-          if (!integration?.config) {
-            throw new Error('Salesforce configuration not found');
-          }
-          
-          const config = integration.config as any;
-          
-          // With the new direct token exchange approach, tokens are handled by the Edge Function
-          // We just need to check if tokens are now available
-          
-          // Note: The current OAuth service doesn't store code verifier in callback data
-          // This is a limitation that needs to be addressed for full PKCE support
-          // For now, we'll pass an empty string and the service will handle it
-          const tokenData = await salesforceOAuthService.completeOAuthFlow(
-            currentCompany.id,
-            authCode,
-            '', // Code verifier - needs to be properly implemented
-            {
-              clientId: config.client_id,
-              clientSecret: config.client_secret,
-              instanceUrl: config.instance_url,
-              redirectUri: '', // Will be set by service
-              sandbox: config.sandbox || false
-            }
-          );
-          
-          if (tokenData) {
-            Alert.alert(
-              'Success',
-              'Salesforce authentication completed successfully!',
-              [{ text: 'OK', onPress: () => loadConfig() }]
-            );
-          }
-        } catch (error) {
-          console.error('[SalesforceConfig] OAuth callback error:', error);
-          Alert.alert(
-            'Authentication Error',
-            'Failed to complete Salesforce authentication. Please try again.',
-            [{ text: 'OK' }]
-          );
-        } finally {
-          setIsAuthenticating(false);
-        }
-      }
-    };
-    
-    handleOAuthCallback();
-  }, [route.params, currentCompany?.id]);
-
-  const loadConfig = async () => {
+  const loadExistingConfiguration = async () => {
     if (!currentCompany?.id) {
       setLoading(false);
       return;
     }
 
     try {
-      setLoading(true);
-      console.log('[SalesforceConfig] Loading config for company:', currentCompany.id);
+      console.log('[SalesforceConfig] Loading configuration for company:', currentCompany.id);
       
       const integrations = await companyIntegrationsService.getCompanyIntegrations(currentCompany.id);
       const salesforceIntegration = integrations.find(i => i.integration_type === 'salesforce');
       
       if (salesforceIntegration?.config) {
-        console.log('[SalesforceConfig] Found existing config:', salesforceIntegration.config);
+        console.log('[SalesforceConfig] Found existing configuration');
         setConfig(salesforceIntegration.config as SalesforceConfig);
-        setConnectionStatus(salesforceIntegration.status === 'active' ? 'connected' : 'failed');
+        
+        // Check if authenticated
+        const isActive = salesforceIntegration.status === 'active';
+        setIsAuthenticated(isActive);
+        
+        if (isActive) {
+          setCurrentStep('complete');
+          setStatusMessage(`Connected to ${salesforceIntegration.config.instance_url}`);
+          setLastTestTime(new Date(salesforceIntegration.updated_at || '').toLocaleString());
+        } else {
+          setCurrentStep('test');
+          setStatusMessage('Configuration found but not authenticated');
+        }
+      } else {
+        console.log('[SalesforceConfig] No existing configuration found');
+        setCurrentStep('setup');
+        setStatusMessage('Ready to configure Salesforce integration');
       }
     } catch (error) {
-      console.error('[SalesforceConfig] Error loading config:', error);
-      Alert.alert('Error', 'Failed to load Salesforce configuration');
+      console.error('[SalesforceConfig] Error loading configuration:', error);
+      setStatusMessage('Error loading configuration');
     } finally {
       setLoading(false);
     }
   };
 
-  const saveConfig = async () => {
+  const validateConfiguration = (): string | null => {
+    if (!config.client_id.trim()) {
+      return 'Client ID is required';
+    }
+    if (!config.client_secret.trim()) {
+      return 'Client Secret is required';
+    }
+    if (config.client_id.length < 20) {
+      return 'Client ID appears to be invalid (too short)';
+    }
+    if (config.client_secret.length < 20) {
+      return 'Client Secret appears to be invalid (too short)';
+    }
+    return null;
+  };
+
+  const testConnection = async () => {
+    const validationError = validateConfiguration();
+    if (validationError) {
+      Alert.alert('Validation Error', validationError);
+      return;
+    }
+
     if (!currentCompany?.id || !user?.id) {
       Alert.alert('Error', 'Company or user information is missing');
       return;
     }
 
-    if (!config.client_id.trim()) {
-      Alert.alert('Validation Error', 'Client ID is required');
+    try {
+      setConnectionStatus('testing');
+      setStatusMessage('Testing connection to Salesforce...');
+      
+      console.log('[SalesforceConfig] Testing connection with config:', {
+        client_id: config.client_id.substring(0, 10) + '...',
+        sandbox: config.sandbox,
+        instance_url: config.instance_url || 'auto-detect'
+      });
+
+      // First, save the configuration temporarily to test it
+      await companyIntegrationsService.configureSalesforce(currentCompany.id, config, user.id);
+      
+      // Then test the connection using the company integrations service
+      const result = await companyIntegrationsService.testSalesforceConnection(currentCompany.id);
+      
+      if (result.success) {
+        setConnectionStatus('success');
+        setStatusMessage('Connection successful! Ready to authenticate.');
+        setLastTestTime(new Date().toLocaleString());
+        setCurrentStep('authenticate');
+        
+        // Update instance URL if detected from test results
+        if (result.details?.instance_url && result.details.instance_url !== config.instance_url) {
+          setConfig(prev => ({
+            ...prev,
+            instance_url: result.details.instance_url
+          }));
+        }
+      } else {
+        throw new Error(result.message || 'Connection test failed');
+      }
+    } catch (error) {
+      console.error('[SalesforceConfig] Connection test failed:', error);
+      setConnectionStatus('error');
+      setStatusMessage(`Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const authenticateWithSalesforce = async () => {
+    if (connectionStatus !== 'success') {
+      Alert.alert('Test Required', 'Please test your connection first before authenticating.');
       return;
     }
 
-    if (!config.client_secret.trim()) {
-      Alert.alert('Validation Error', 'Client Secret is required');
+    try {
+      setStatusMessage('Starting Salesforce authentication...');
+      
+      const result = await salesforceOAuthService.initiateOAuth(config);
+      
+      if (result.success && result.authUrl) {
+        const supported = await Linking.canOpenURL(result.authUrl);
+        if (supported) {
+          await Linking.openURL(result.authUrl);
+          
+          Alert.alert(
+            'Authentication Started',
+            'Please complete the authentication in your browser. You will be redirected back to the app when complete.',
+            [
+              {
+                text: 'I completed authentication',
+                onPress: () => {
+                  setStatusMessage('Verifying authentication...');
+                  // Check authentication status after a delay
+                  setTimeout(checkAuthenticationStatus, 2000);
+                }
+              },
+              {
+                text: 'Cancel',
+                style: 'cancel'
+              }
+            ]
+          );
+        } else {
+          Alert.alert('Error', 'Unable to open authentication URL');
+        }
+      } else {
+        Alert.alert('Error', result.error || 'Failed to start authentication');
+      }
+    } catch (error) {
+      console.error('[SalesforceConfig] Authentication error:', error);
+      Alert.alert('Error', `Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const checkAuthenticationStatus = async () => {
+    try {
+      // Check if tokens are now available
+      if (currentCompany?.id) {
+        const tokens = await salesforceOAuthService.getStoredTokens(currentCompany.id);
+        if (tokens?.access_token) {
+          setIsAuthenticated(true);
+          setCurrentStep('complete');
+          setStatusMessage(`Successfully authenticated with ${config.instance_url}`);
+          setLastTestTime(new Date().toLocaleString());
+          
+          // Save the configuration
+          await saveConfiguration();
+        } else {
+          setStatusMessage('Authentication not yet complete. Please try again.');
+        }
+      }
+    } catch (error) {
+      console.error('[SalesforceConfig] Error checking authentication:', error);
+      setStatusMessage('Error verifying authentication. Please try again.');
+    }
+  };
+
+  const saveConfiguration = async () => {
+    if (!currentCompany?.id || !user?.id) {
+      Alert.alert('Error', 'Company or user information is missing');
       return;
     }
 
     try {
       setSaving(true);
-      console.log('[SalesforceConfig] Saving config for company:', currentCompany.id);
+      console.log('[SalesforceConfig] Saving configuration for company:', currentCompany.id);
 
       await companyIntegrationsService.createOrUpdateIntegration({
         company_id: currentCompany.id,
         integration_type: 'salesforce',
         config: config,
-        status: 'active',
+        status: isAuthenticated ? 'active' : 'inactive',
         created_by: user.id,
         updated_by: user.id
       });
@@ -208,115 +273,81 @@ const SalesforceConfigScreen: React.FC = () => {
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (error) {
-      console.error('[SalesforceConfig] Error saving config:', error);
+      console.error('[SalesforceConfig] Error saving configuration:', error);
       Alert.alert('Error', 'Failed to save configuration. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
-  const testConnection = async () => {
-    if (!config.client_id.trim() || !config.client_secret.trim()) {
-      Alert.alert('Validation Error', 'Please fill in Client ID and Client Secret before testing');
-      return;
-    }
-
-    try {
-      setIsTesting(true);
-      setTestResults(null);
-      console.log('[SalesforceConfig] Testing connection...');
-
-      // Test the connection using our OAuth service
-      const result = await salesforceOAuthService.testConnection(config);
-      
-      if (result.success) {
-        setTestResults({
-          success: true,
-          message: 'Connection successful! Ready to authenticate.',
-          details: result.data
-        });
-        setConnectionStatus('connected');
-      } else {
-        setTestResults({
-          success: false,
-          message: result.error || 'Connection failed',
-          details: result.details
-        });
-        setConnectionStatus('failed');
-      }
-    } catch (error) {
-      console.error('[SalesforceConfig] Connection test error:', error);
-      setTestResults({
-        success: false,
-        message: 'Connection test failed: ' + (error as Error).message
-      });
-      setConnectionStatus('failed');
-    } finally {
-      setIsTesting(false);
-    }
-  };
-
-  const authenticateWithSalesforce = async () => {
-    if (!config.client_id.trim() || !config.client_secret.trim()) {
-      Alert.alert('Validation Error', 'Please fill in and test your configuration first');
-      return;
-    }
-
-    try {
-      setIsAuthenticating(true);
-      console.log('[SalesforceConfig] Starting OAuth flow...');
-
-      const result = await salesforceOAuthService.initiateOAuth(config);
-      
-      if (result.success && result.authUrl) {
-        // Open the Salesforce OAuth URL
-        const supported = await Linking.canOpenURL(result.authUrl);
-        if (supported) {
-          await Linking.openURL(result.authUrl);
-          Alert.alert(
-            'Authentication Started',
-            'Please complete the authentication in your browser, then return to the app.',
-            [{ text: 'OK' }]
-          );
-        } else {
-          Alert.alert('Error', 'Unable to open authentication URL');
+  const resetConfiguration = () => {
+    Alert.alert(
+      'Reset Configuration',
+      'This will clear all Salesforce settings and require you to set up the integration again. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            setConfig({
+              instance_url: '',
+              client_id: '',
+              client_secret: '',
+              username: '',
+              security_token: '',
+              sandbox: false,
+              api_version: '58.0',
+              object_mappings: {
+                photo_batch: 'Custom_Photo_Batch__c',
+                photo: 'Custom_Photo__c'
+              },
+              field_mappings: {
+                batch_id: 'Batch_ID__c',
+                created_date: 'Created_Date__c',
+                company_id: 'Company_ID__c',
+                identifier: 'Identifier__c',
+                identifier_type: 'Identifier_Type__c',
+                total_photos: 'Total_Photos__c',
+                photo_id: 'Photo_ID__c',
+                batch_reference: 'Photo_Batch__c',
+                file_name: 'File_Name__c',
+                file_size: 'File_Size__c',
+                capture_date: 'Capture_Date__c'
+              }
+            });
+            setConnectionStatus('idle');
+            setCurrentStep('setup');
+            setIsAuthenticated(false);
+            setStatusMessage('Configuration reset. Ready to start over.');
+            setLastTestTime('');
+          }
         }
-      } else {
-        Alert.alert('Error', result.error || 'Failed to start authentication');
-      }
-    } catch (error) {
-      console.error('[SalesforceConfig] OAuth error:', error);
-      Alert.alert('Error', 'Authentication failed: ' + (error as Error).message);
-    } finally {
-      setIsAuthenticating(false);
+      ]
+    );
+  };
+
+  const getStepIcon = (step: ConfigurationStep) => {
+    switch (step) {
+      case 'setup': return 'settings-outline';
+      case 'test': return 'checkmark-circle-outline';
+      case 'authenticate': return 'key-outline';
+      case 'complete': return 'checkmark-circle';
+      default: return 'help-circle-outline';
     }
   };
 
-  const updateConfig = (field: keyof SalesforceConfig, value: any) => {
-    setConfig(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const updateObjectMapping = (key: string, value: string) => {
-    setConfig(prev => ({
-      ...prev,
-      object_mappings: {
-        ...prev.object_mappings,
-        [key]: value
-      }
-    }));
-  };
-
-  const updateFieldMapping = (key: string, value: string) => {
-    setConfig(prev => ({
-      ...prev,
-      field_mappings: {
-        ...prev.field_mappings,
-        [key]: value
-      }
-    }));
+  const getStepColor = (step: ConfigurationStep) => {
+    if (step === currentStep) return COLORS.primary;
+    if (
+      (step === 'setup') ||
+      (step === 'test' && currentStep !== 'setup') ||
+      (step === 'authenticate' && ['authenticate', 'complete'].includes(currentStep)) ||
+      (step === 'complete' && currentStep === 'complete')
+    ) {
+      return COLORS.success;
+    }
+    return COLORS.grey400;
   };
 
   if (loading) {
@@ -330,112 +361,210 @@ const SalesforceConfigScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
+      <StatusBar backgroundColor={COLORS.primary} barStyle="light-content" />
+      
       <ScrollView 
         style={styles.content}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
       >
-        {/* Header */}
+        {/* Modern Header */}
         <View style={styles.header}>
-          <Ionicons name="cloud-outline" size={48} color={COLORS.primary} />
-          <Text style={styles.title}>Salesforce Integration</Text>
-          <Text style={styles.subtitle}>
+          <View style={styles.headerIcon}>
+            <Ionicons name="cloud" size={32} color={COLORS.white} />
+          </View>
+          <Text style={styles.headerTitle}>Salesforce Integration</Text>
+          <Text style={styles.headerSubtitle}>
             Connect with Salesforce to sync your quality control data
           </Text>
         </View>
 
-        {/* Basic Configuration */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Basic Configuration</Text>
+        {/* Progress Steps */}
+        <View style={styles.progressContainer}>
+          <Text style={styles.progressTitle}>Setup Progress</Text>
+          <View style={styles.progressSteps}>
+            {[
+              { step: 'setup' as ConfigurationStep, label: 'Configure' },
+              { step: 'test' as ConfigurationStep, label: 'Test' },
+              { step: 'authenticate' as ConfigurationStep, label: 'Authenticate' },
+              { step: 'complete' as ConfigurationStep, label: 'Complete' }
+            ].map((item, index) => (
+              <View key={item.step} style={styles.progressStep}>
+                <View style={[
+                  styles.progressStepIcon,
+                  { backgroundColor: getStepColor(item.step) }
+                ]}>
+                  <Ionicons 
+                    name={getStepIcon(item.step)} 
+                    size={20} 
+                    color={COLORS.white} 
+                  />
+                </View>
+                <Text style={[
+                  styles.progressStepLabel,
+                  { color: getStepColor(item.step) }
+                ]}>
+                  {item.label}
+                </Text>
+                {index < 3 && (
+                  <View style={[
+                    styles.progressStepLine,
+                    { backgroundColor: getStepColor(item.step) }
+                  ]} />
+                )}
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* Status Card */}
+        <View style={styles.statusCard}>
+          <View style={styles.statusHeader}>
+            <Ionicons 
+              name={
+                connectionStatus === 'success' ? 'checkmark-circle' :
+                connectionStatus === 'error' ? 'alert-circle' :
+                connectionStatus === 'testing' ? 'sync' : 'information-circle'
+              }
+              size={24}
+              color={
+                connectionStatus === 'success' ? COLORS.success :
+                connectionStatus === 'error' ? COLORS.error :
+                connectionStatus === 'testing' ? COLORS.warning : COLORS.info
+              }
+            />
+            <Text style={styles.statusTitle}>Status</Text>
+          </View>
+          <Text style={styles.statusMessage}>{statusMessage}</Text>
+          {lastTestTime && (
+            <Text style={styles.statusTime}>Last tested: {lastTestTime}</Text>
+          )}
+        </View>
+
+        {/* Configuration Form */}
+        <View style={styles.configSection}>
+          <Text style={styles.sectionTitle}>Salesforce Configuration</Text>
           
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Environment</Text>
+          {/* Environment Toggle */}
+          <View style={styles.environmentToggle}>
+            <Text style={styles.environmentLabel}>Environment</Text>
             <View style={styles.switchContainer}>
-              <Text style={styles.switchLabel}>Production</Text>
+              <Text style={[styles.switchLabel, !config.sandbox && styles.switchLabelActive]}>
+                Production
+              </Text>
               <Switch
-                value={!config.sandbox}
-                onValueChange={(value) => updateConfig('sandbox', !value)}
-                trackColor={{ false: COLORS.grey300, true: COLORS.primaryLight }}
-                thumbColor={!config.sandbox ? COLORS.primary : COLORS.grey100}
+                value={config.sandbox}
+                onValueChange={(value) => setConfig(prev => ({ ...prev, sandbox: value }))}
+                trackColor={{ false: COLORS.primary, true: COLORS.warning }}
+                thumbColor={COLORS.white}
               />
-              <Text style={styles.switchLabel}>Sandbox</Text>
+              <Text style={[styles.switchLabel, config.sandbox && styles.switchLabelActive]}>
+                Sandbox
+              </Text>
             </View>
           </View>
 
+          {/* Credentials */}
           <CustomInput
-            label="Client ID (Consumer Key)"
+            label="Consumer Key (Client ID)"
             value={config.client_id}
-            onChangeText={(value) => updateConfig('client_id', value)}
-            placeholder="Enter your Salesforce Connected App Client ID"
+            onChangeText={(value) => setConfig(prev => ({ ...prev, client_id: value }))}
+            placeholder="3MVG9ux34Ig8G5epos1WTw..."
             multiline={false}
             style={styles.input}
+            autoCapitalize="none"
+            autoCorrect={false}
           />
 
           <CustomInput
-            label="Client Secret (Consumer Secret)"
+            label="Consumer Secret (Client Secret)"
             value={config.client_secret}
-            onChangeText={(value) => updateConfig('client_secret', value)}
-            placeholder="Enter your Salesforce Connected App Client Secret"
+            onChangeText={(value) => setConfig(prev => ({ ...prev, client_secret: value }))}
+            placeholder="Enter your Consumer Secret"
             secureTextEntry={true}
             multiline={false}
             style={styles.input}
+            autoCapitalize="none"
+            autoCorrect={false}
           />
+
+          {config.instance_url && (
+            <View style={styles.instanceUrlContainer}>
+              <Text style={styles.instanceUrlLabel}>Detected Instance URL:</Text>
+              <Text style={styles.instanceUrlText}>{config.instance_url}</Text>
+            </View>
+          )}
         </View>
 
-        {/* Connection Test */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Connection Test</Text>
-          
-          {testResults && (
-            <View style={[
-              styles.testResultContainer,
-              { backgroundColor: testResults.success ? COLORS.successLight : COLORS.errorLight }
-            ]}>
-              <Ionicons 
-                name={testResults.success ? "checkmark-circle" : "alert-circle"} 
-                size={20} 
-                color={testResults.success ? COLORS.success : COLORS.error} 
+        {/* Action Buttons */}
+        <View style={styles.actionButtons}>
+          {currentStep === 'setup' && (
+            <CustomButton
+              title="Test Connection"
+              onPress={testConnection}
+              disabled={connectionStatus === 'testing' || !config.client_id || !config.client_secret}
+              style={styles.primaryButton}
+              variant="primary"
+            />
+          )}
+
+          {currentStep === 'test' && connectionStatus === 'success' && (
+            <CustomButton
+              title="Authenticate with Salesforce"
+              onPress={authenticateWithSalesforce}
+              style={styles.primaryButton}
+              variant="primary"
+            />
+          )}
+
+          {currentStep === 'authenticate' && (
+            <CustomButton
+              title="Check Authentication Status"
+              onPress={checkAuthenticationStatus}
+              style={styles.primaryButton}
+              variant="secondary"
+            />
+          )}
+
+          {currentStep === 'complete' && (
+            <View style={styles.completeActions}>
+              <CustomButton
+                title={saving ? 'Saving...' : 'Save Configuration'}
+                onPress={saveConfiguration}
+                disabled={saving}
+                style={styles.saveButton}
+                variant="primary"
               />
-              <Text style={[
-                styles.testResultText,
-                { color: testResults.success ? COLORS.success : COLORS.error }
-              ]}>
-                {testResults.message}
-              </Text>
+              <CustomButton
+                title="Test Again"
+                onPress={testConnection}
+                style={styles.secondaryButton}
+                variant="secondary"
+              />
             </View>
           )}
 
-          <View style={styles.buttonGroup}>
+          {connectionStatus === 'error' && (
             <CustomButton
-              title={isTesting ? 'Testing...' : 'Test Connection'}
+              title="Retry Test"
               onPress={testConnection}
-              style={styles.testButton}
+              style={styles.retryButton}
               variant="secondary"
-              disabled={isTesting}
             />
+          )}
 
-            <CustomButton
-              title={isAuthenticating ? 'Authenticating...' : 'Authenticate with Salesforce'}
-              onPress={authenticateWithSalesforce}
-              style={styles.authButton}
-              variant="primary"
-              disabled={isAuthenticating}
-            />
-          </View>
+          <TouchableOpacity onPress={resetConfiguration} style={styles.resetButton}>
+            <Text style={styles.resetButtonText}>Reset Configuration</Text>
+          </TouchableOpacity>
         </View>
 
-        {config.instance_url && (
-          <Text style={styles.instanceUrl}>
-            Instance: {config.instance_url}
-          </Text>
-        )}
-
-        {/* Advanced Configuration */}
-        <View style={styles.section}>
+        {/* Setup Instructions */}
+        <View style={styles.instructionsSection}>
           <TouchableOpacity 
-            style={styles.advancedToggle}
+            style={styles.instructionsHeader}
             onPress={() => setShowAdvanced(!showAdvanced)}
           >
-            <Text style={styles.sectionTitle}>Advanced Configuration</Text>
+            <Text style={styles.instructionsTitle}>Setup Instructions</Text>
             <Ionicons 
               name={showAdvanced ? "chevron-up" : "chevron-down"} 
               size={20} 
@@ -444,96 +573,52 @@ const SalesforceConfigScreen: React.FC = () => {
           </TouchableOpacity>
 
           {showAdvanced && (
-            <View style={styles.advancedContent}>
-              <CustomInput
-                label="API Version"
-                value={config.api_version}
-                onChangeText={(value) => updateConfig('api_version', value)}
-                placeholder="58.0"
-                style={styles.input}
-              />
+            <View style={styles.instructionsContent}>
+              <View style={styles.instructionStep}>
+                <View style={styles.stepNumber}>
+                  <Text style={styles.stepNumberText}>1</Text>
+                </View>
+                <View style={styles.stepContent}>
+                  <Text style={styles.stepTitle}>Create Connected App</Text>
+                  <Text style={styles.stepDescription}>
+                    In Salesforce Setup, create a new Connected App with OAuth settings enabled
+                  </Text>
+                </View>
+              </View>
 
-              <Text style={styles.subSectionTitle}>Object Mappings</Text>
-              <CustomInput
-                label="Photo Batch Object"
-                value={config.object_mappings.photo_batch}
-                onChangeText={(value) => updateObjectMapping('photo_batch', value)}
-                placeholder="Custom_Photo_Batch__c"
-                style={styles.input}
-              />
-              
-              <CustomInput
-                label="Photo Object"
-                value={config.object_mappings.photo}
-                onChangeText={(value) => updateObjectMapping('photo', value)}
-                placeholder="Custom_Photo__c"
-                style={styles.input}
-              />
+              <View style={styles.instructionStep}>
+                <View style={styles.stepNumber}>
+                  <Text style={styles.stepNumberText}>2</Text>
+                </View>
+                <View style={styles.stepContent}>
+                  <Text style={styles.stepTitle}>Configure OAuth</Text>
+                  <Text style={styles.stepDescription}>
+                    Set the callback URL to our secure endpoint
+                  </Text>
+                  <View style={styles.callbackUrl}>
+                    <Text style={styles.callbackUrlText}>
+                      https://luwlvmcixwdtuaffamgk.supabase.co/functions/v1/salesforce-oauth-callback
+                    </Text>
+                  </View>
+                </View>
+              </View>
 
-              <Text style={styles.subSectionTitle}>Field Mappings</Text>
-              <CustomInput
-                label="Batch ID Field"
-                value={config.field_mappings.batch_id}
-                onChangeText={(value) => updateFieldMapping('batch_id', value)}
-                placeholder="Batch_ID__c"
-                style={styles.input}
-              />
-              
-              <CustomInput
-                label="Identifier Field"
-                value={config.field_mappings.identifier}
-                onChangeText={(value) => updateFieldMapping('identifier', value)}
-                placeholder="Identifier__c"
-                style={styles.input}
-              />
+              <View style={styles.instructionStep}>
+                <View style={styles.stepNumber}>
+                  <Text style={styles.stepNumberText}>3</Text>
+                </View>
+                <View style={styles.stepContent}>
+                  <Text style={styles.stepTitle}>Get Credentials</Text>
+                  <Text style={styles.stepDescription}>
+                    Copy the Consumer Key and Consumer Secret from your Connected App
+                  </Text>
+                </View>
+              </View>
             </View>
           )}
         </View>
 
-        {/* Setup Instructions */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Setup Instructions</Text>
-          <View style={styles.instructionsList}>
-            <Text style={styles.instructionItem}>
-              1. Create a Connected App in Salesforce Setup
-            </Text>
-            <Text style={styles.instructionItem}>
-              2. Enable OAuth settings and configure callback URL
-            </Text>
-            <Text style={styles.instructionItem}>
-              3. Copy the Consumer Key (Client ID) and Consumer Secret
-            </Text>
-            <Text style={styles.instructionItem}>
-              4. Test the connection before saving
-            </Text>
-          </View>
-          
-          <View style={styles.callbackUrlContainer}>
-            <Text style={styles.callbackLabel}>Callback URL (Production-Ready)</Text>
-            <Text style={styles.callbackUrl}>
-              https://luwlvmcixwdtuaffamgk.supabase.co/functions/v1/salesforce-oauth-callback
-            </Text>
-            <Text style={styles.callbackNote}>
-              💡 This production-ready Supabase Edge Function endpoint works for all environments and handles secure OAuth token exchange.
-            </Text>
-            <Text style={styles.callbackInstruction}>
-              📋 Copy this URL to your Salesforce Connected App's Callback URL setting.
-            </Text>
-          </View>
-        </View>
-
-        {/* Save Button */}
-        <View style={styles.saveSection}>
-          <CustomButton
-            title={saving ? 'Saving...' : 'Save Configuration'}
-            onPress={saveConfig}
-            variant="primary"
-            disabled={saving}
-            style={styles.saveButton}
-          />
-        </View>
-
-        {/* Add padding at bottom for better scrolling */}
+        {/* Add bottom padding for better scrolling */}
         <View style={{ height: 100 }} />
       </ScrollView>
     </SafeAreaView>
@@ -558,163 +643,270 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  scrollContent: {
     padding: SPACING.lg,
   },
   header: {
-    alignItems: 'center',
-    marginBottom: SPACING.xl,
-    backgroundColor: COLORS.background,
-    padding: SPACING.lg,
+    backgroundColor: COLORS.primary,
+    padding: SPACING.xl,
     borderRadius: BORDER_RADIUS.lg,
+    alignItems: 'center',
+    marginBottom: SPACING.lg,
     ...CARD_STYLES.shadow,
   },
-  title: {
+  headerIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  headerTitle: {
     fontSize: FONTS.xxLarge,
     fontWeight: FONTS.bold,
-    color: COLORS.text,
-    marginBottom: SPACING.sm,
+    color: COLORS.white,
     textAlign: 'center',
+    marginBottom: SPACING.sm,
   },
-  subtitle: {
+  headerSubtitle: {
     fontSize: FONTS.regular,
-    color: COLORS.textSecondary,
+    color: 'rgba(255,255,255,0.9)',
     textAlign: 'center',
     lineHeight: 22,
   },
-  section: {
-    marginBottom: SPACING.xl,
+  progressContainer: {
     backgroundColor: COLORS.background,
     padding: SPACING.lg,
     borderRadius: BORDER_RADIUS.lg,
+    marginBottom: SPACING.lg,
+    ...CARD_STYLES.shadow,
+  },
+  progressTitle: {
+    fontSize: FONTS.large,
+    fontWeight: FONTS.bold,
+    color: COLORS.text,
+    marginBottom: SPACING.md,
+    textAlign: 'center',
+  },
+  progressSteps: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  progressStep: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  progressStepIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  progressStepLabel: {
+    fontSize: FONTS.small,
+    fontWeight: FONTS.mediumWeight,
+    textAlign: 'center',
+  },
+  progressStepLine: {
+    position: 'absolute',
+    top: 20,
+    left: '50%',
+    right: '-50%',
+    height: 2,
+    zIndex: -1,
+  },
+  statusCard: {
+    backgroundColor: COLORS.background,
+    padding: SPACING.lg,
+    borderRadius: BORDER_RADIUS.lg,
+    marginBottom: SPACING.lg,
+    ...CARD_STYLES.shadow,
+  },
+  statusHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  statusTitle: {
+    fontSize: FONTS.large,
+    fontWeight: FONTS.bold,
+    color: COLORS.text,
+    marginLeft: SPACING.sm,
+  },
+  statusMessage: {
+    fontSize: FONTS.regular,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
+    marginBottom: SPACING.sm,
+  },
+  statusTime: {
+    fontSize: FONTS.small,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+  },
+  configSection: {
+    backgroundColor: COLORS.background,
+    padding: SPACING.lg,
+    borderRadius: BORDER_RADIUS.lg,
+    marginBottom: SPACING.lg,
     ...CARD_STYLES.shadow,
   },
   sectionTitle: {
     fontSize: FONTS.large,
     fontWeight: FONTS.bold,
     color: COLORS.text,
-    marginBottom: SPACING.md,
+    marginBottom: SPACING.lg,
   },
-  subSectionTitle: {
-    fontSize: FONTS.medium,
-    fontWeight: FONTS.bold,
-    color: COLORS.text,
-    marginBottom: SPACING.md,
-    marginTop: SPACING.lg,
+  environmentToggle: {
+    marginBottom: SPACING.lg,
   },
-  inputGroup: {
-    marginBottom: SPACING.md,
-  },
-  inputLabel: {
+  environmentLabel: {
     fontSize: FONTS.regular,
     fontWeight: FONTS.mediumWeight,
     color: COLORS.text,
     marginBottom: SPACING.sm,
-  },
-  input: {
-    marginBottom: SPACING.md,
   },
   switchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: SPACING.sm,
     backgroundColor: COLORS.grey50,
+    padding: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
   },
   switchLabel: {
     fontSize: FONTS.regular,
-    color: COLORS.text,
+    color: COLORS.textSecondary,
     marginHorizontal: SPACING.md,
   },
-  testResultContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
+  switchLabelActive: {
+    color: COLORS.text,
+    fontWeight: FONTS.bold,
+  },
+  input: {
     marginBottom: SPACING.md,
   },
-  testResultText: {
-    fontSize: FONTS.regular,
-    marginLeft: SPACING.sm,
-    flex: 1,
-  },
-  buttonGroup: {
-    gap: SPACING.md,
-  },
-  testButton: {
-    marginBottom: SPACING.sm,
-  },
-  authButton: {
-    marginBottom: SPACING.sm,
-  },
-  instanceUrl: {
-    fontSize: FONTS.small,
-    color: COLORS.textSecondary,
-    textAlign: 'center',
-    marginBottom: SPACING.lg,
-    fontStyle: 'italic',
-  },
-  advancedToggle: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: SPACING.sm,
-  },
-  advancedContent: {
-    marginTop: SPACING.md,
-  },
-  instructionsList: {
-    backgroundColor: COLORS.grey50,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.lg,
-  },
-  instructionItem: {
-    fontSize: FONTS.regular,
-    color: COLORS.text,
-    marginBottom: SPACING.sm,
-    lineHeight: 20,
-  },
-  callbackUrlContainer: {
+  instanceUrlContainer: {
     backgroundColor: COLORS.infoLight,
     padding: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.info,
+    marginTop: SPACING.md,
   },
-  callbackLabel: {
-    fontSize: FONTS.medium,
+  instanceUrlLabel: {
+    fontSize: FONTS.small,
     fontWeight: FONTS.bold,
     color: COLORS.text,
-    marginBottom: SPACING.sm,
+    marginBottom: SPACING.xs,
   },
-  callbackUrl: {
+  instanceUrlText: {
     fontSize: FONTS.small,
     color: COLORS.info,
-    backgroundColor: COLORS.background,
-    padding: SPACING.sm,
-    borderRadius: BORDER_RADIUS.sm,
     fontFamily: 'monospace',
-    marginBottom: SPACING.sm,
   },
-  callbackNote: {
-    fontSize: FONTS.small,
-    color: COLORS.textSecondary,
-    marginBottom: SPACING.sm,
-    lineHeight: 18,
+  actionButtons: {
+    marginBottom: SPACING.lg,
   },
-  callbackInstruction: {
-    fontSize: FONTS.small,
-    color: COLORS.textSecondary,
-    fontWeight: FONTS.mediumWeight,
+  primaryButton: {
+    marginBottom: SPACING.md,
   },
-  saveSection: {
-    marginTop: SPACING.lg,
-    marginBottom: SPACING.xl,
+  completeActions: {
+    gap: SPACING.md,
   },
   saveButton: {
     backgroundColor: COLORS.success,
+    marginBottom: SPACING.sm,
+  },
+  secondaryButton: {
+    marginBottom: SPACING.sm,
+  },
+  retryButton: {
+    marginBottom: SPACING.md,
+  },
+  resetButton: {
+    alignItems: 'center',
+    paddingVertical: SPACING.md,
+  },
+  resetButtonText: {
+    fontSize: FONTS.regular,
+    color: COLORS.error,
+    textDecorationLine: 'underline',
+  },
+  instructionsSection: {
+    backgroundColor: COLORS.background,
+    borderRadius: BORDER_RADIUS.lg,
+    overflow: 'hidden',
+    ...CARD_STYLES.shadow,
+  },
+  instructionsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: SPACING.lg,
+    backgroundColor: COLORS.grey50,
+  },
+  instructionsTitle: {
+    fontSize: FONTS.large,
+    fontWeight: FONTS.bold,
+    color: COLORS.text,
+  },
+  instructionsContent: {
+    padding: SPACING.lg,
+  },
+  instructionStep: {
+    flexDirection: 'row',
+    marginBottom: SPACING.lg,
+  },
+  stepNumber: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: SPACING.md,
+  },
+  stepNumberText: {
+    fontSize: FONTS.regular,
+    fontWeight: FONTS.bold,
+    color: COLORS.white,
+  },
+  stepContent: {
+    flex: 1,
+  },
+  stepTitle: {
+    fontSize: FONTS.medium,
+    fontWeight: FONTS.bold,
+    color: COLORS.text,
+    marginBottom: SPACING.xs,
+  },
+  stepDescription: {
+    fontSize: FONTS.regular,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
+    marginBottom: SPACING.sm,
+  },
+  callbackUrl: {
+    backgroundColor: COLORS.grey100,
+    padding: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.primary,
+  },
+  callbackUrlText: {
+    fontSize: FONTS.small,
+    fontFamily: 'monospace',
+    color: COLORS.primary,
   },
 });
 
 export default SalesforceConfigScreen;
+
