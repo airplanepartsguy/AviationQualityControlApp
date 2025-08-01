@@ -15,8 +15,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, CARD_STYLES } from '../styles/theme';
-// import { getAvailableERPIntegrations, type ERPIntegrationAvailability } from '../services/erpIntegrationPermissionsService';
-// import companyIntegrationsService from '../services/companyIntegrationsService';
+import companyIntegrationsService from '../services/companyIntegrationsService';
 import { useCallback } from 'react';
 
 interface ERPIntegrationStatus {
@@ -74,13 +73,21 @@ const ERPScreen: React.FC = () => {
 
       console.log('[ERPScreen] Loading ERP data for company:', currentCompany.id);
       
-      // Simulate loading ERP data - simplified version
+      // Get current integration status from company integrations service
+      const integrations = await companyIntegrationsService.getCompanyIntegrations(currentCompany.id);
+      console.log('[ERPScreen] Current integrations:', integrations);
+
+      // Find Salesforce integration
+      const salesforceIntegration = integrations.find(i => i.integration_type === 'salesforce');
+      console.log('[ERPScreen] Salesforce integration:', salesforceIntegration);
+
       const updatedStatus: ERPIntegrationStatus = {
         salesforce: {
           available: true,
-          connected: false,
+          connected: salesforceIntegration?.status === 'active',
           isPrimary: true,
-          status: 'inactive',
+          lastSync: salesforceIntegration?.updated_at,
+          status: salesforceIntegration?.status === 'active' ? 'active' : 'inactive',
         },
         sharepoint: {
           available: false,

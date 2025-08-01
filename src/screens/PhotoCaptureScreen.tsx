@@ -1138,31 +1138,14 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
         
         console.log(`[PCS_DEBUG] handleScannedIdSubmit: Using companyId=${companyId}`);
         
-        // Use managed database connection for consistency
-        let database;
-        try {
-          // Add specific timeout for database connection  
-          const dbConnectionPromise = openDatabase();
-          const dbTimeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Database connection timed out')), 2000)
-          );
-          
-          database = await Promise.race([dbConnectionPromise, dbTimeoutPromise]);
-          console.log(`[PCS_DEBUG] handleScannedIdSubmit: Got managed database instance`);
-        } catch (dbError) {
-          console.error('[PCS_DEBUG] Failed to get managed database:', dbError);
-          const errorMessage = dbError instanceof Error ? dbError.message : 'Unknown database error';
-          throw new Error(`Managed database connection failed: ${errorMessage}`);
-        }
+        // Use managed database connection - simplified
+        console.log(`[PCS_DEBUG] handleScannedIdSubmit: Getting database connection...`);
+        const database = await openDatabase();
+        console.log(`[PCS_DEBUG] handleScannedIdSubmit: Got database instance`);
         
-        // Ensure companyId column exists (add if missing)
-        try {
-          await database.execAsync('ALTER TABLE photo_batches ADD COLUMN companyId TEXT');
-          console.log('[PCS_DEBUG] Added companyId column to photo_batches');
-        } catch (alterError) {
-          // Column likely already exists, which is fine
-          console.log('[PCS_DEBUG] companyId column already exists or alter failed:', alterError);
-        }
+        
+        // Skip ALTER TABLE operations to prevent timeout issues
+        console.log('[PCS_DEBUG] Skipping column checks to prevent database locks');
         
         // Simplified batch creation - direct INSERT without complex functions
         try {
@@ -1197,12 +1180,8 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
         }
       })();
 
-      // Add 5-second timeout for simpler operation
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Database operation timed out')), 5000)
-      );
-
-      const batchId = await Promise.race([dbOperationPromise, timeoutPromise]);
+      // Simplified - no timeout to prevent race conditions
+      const batchId = await dbOperationPromise;
       
       if (!mountedRef.current) {
         console.log('[PCS_DEBUG] Component unmounted during batch creation');
@@ -1403,13 +1382,8 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
         
         console.log(`[PCS_DEBUG] processAndSavePhoto: Using companyId=${companyId}, batchId=${currentBatch.id}`);
         
-        try {
-          await database.execAsync('ALTER TABLE photos ADD COLUMN companyId TEXT');
-          console.log('[PCS_DEBUG] Added companyId column to photos table');
-        } catch (alterError) {
-          // Column already exists - fine
-          console.log('[PCS_DEBUG] companyId column already exists in photos table');
-        }
+        // Skip ALTER TABLE to prevent database locks
+        console.log('[PCS_DEBUG] Skipping photos table column checks');
         
         // Verify the photos table exists and has the right structure
         const tableInfo = await database.getAllAsync("PRAGMA table_info(photos)");

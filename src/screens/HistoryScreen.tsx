@@ -176,7 +176,7 @@ const HistoryScreen: React.FC = () => {
       case 'error':
         return COLORS.error;
       default:
-        return COLORS.textLight;
+        return COLORS.textSecondary;
     }
   };
 
