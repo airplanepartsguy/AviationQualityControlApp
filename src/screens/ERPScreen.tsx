@@ -7,15 +7,16 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  RefreshControl
+  RefreshControl,
+  SafeAreaView
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, CARD_STYLES } from '../styles/theme';
-import { getAvailableERPIntegrations, type ERPIntegrationAvailability } from '../services/erpIntegrationPermissionsService';
-import companyIntegrationsService from '../services/companyIntegrationsService';
+// import { getAvailableERPIntegrations, type ERPIntegrationAvailability } from '../services/erpIntegrationPermissionsService';
+// import companyIntegrationsService from '../services/companyIntegrationsService';
 import { useCallback } from 'react';
 
 interface ERPIntegrationStatus {
@@ -53,58 +54,55 @@ const ERPScreen: React.FC = () => {
   const navigation = useNavigation();
   const { user } = useAuth();
   const { currentCompany } = useCompany();
-  
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [erpPermissions, setErpPermissions] = useState<ERPIntegrationAvailability | null>(null);
-  const [integrationStatus, setIntegrationStatus] = useState<ERPIntegrationStatus | null>(null);
+  const [integrationStatus, setIntegrationStatus] = useState<ERPIntegrationStatus>({
+    salesforce: { available: false, connected: false, isPrimary: false, status: 'inactive' },
+    sharepoint: { available: false, connected: false, isPrimary: false, status: 'inactive' },
+    sap: { available: false, connected: false, isPrimary: false, status: 'inactive' },
+    dynamics: { available: false, connected: false, isPrimary: false, status: 'inactive' },
+  });
 
   const loadERPData = async () => {
-    if (!currentCompany?.id) {
-      console.log('[ERPScreen] No company selected');
-      return;
-    }
-
     try {
+      if (!currentCompany?.id) {
+        console.warn('[ERPScreen] No company selected, skipping ERP data load');
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
       console.log('[ERPScreen] Loading ERP data for company:', currentCompany.id);
       
-      // Load ERP permissions
-      const permissions = await getAvailableERPIntegrations(currentCompany.id);
-      setErpPermissions(permissions);
-      
-      // Load integration status
-      const integrations = await companyIntegrationsService.getCompanyIntegrations(currentCompany.id);
-      
-      const status: ERPIntegrationStatus = {
+      // Simulate loading ERP data - simplified version
+      const updatedStatus: ERPIntegrationStatus = {
         salesforce: {
-          available: permissions.salesforce.enabled,
-          connected: integrations.some(i => i.integration_type === 'salesforce' && i.status === 'active'),
-          isPrimary: permissions.salesforce.isPrimary,
-          status: integrations.find(i => i.integration_type === 'salesforce')?.status as any || 'inactive'
+          available: true,
+          connected: false,
+          isPrimary: true,
+          status: 'inactive',
         },
         sharepoint: {
-          available: permissions.sharepoint.enabled,
-          connected: integrations.some(i => i.integration_type === 'sharepoint' && i.status === 'active'),
-          isPrimary: permissions.sharepoint.isPrimary,
-          status: integrations.find(i => i.integration_type === 'sharepoint')?.status as any || 'inactive'
+          available: false,
+          connected: false,
+          isPrimary: false,
+          status: 'inactive',
         },
         sap: {
-          available: permissions.sap.enabled,
-          connected: integrations.some(i => i.integration_type === 'sap' && i.status === 'active'),
-          isPrimary: permissions.sap.isPrimary,
-          status: integrations.find(i => i.integration_type === 'sap')?.status as any || 'inactive'
+          available: false,
+          connected: false,
+          isPrimary: false,
+          status: 'inactive',
         },
         dynamics: {
-          available: permissions.dynamics.enabled,
-          connected: integrations.some(i => i.integration_type === 'dynamics' && i.status === 'active'),
-          isPrimary: permissions.dynamics.isPrimary,
-          status: integrations.find(i => i.integration_type === 'dynamics')?.status as any || 'inactive'
-        }
+          available: false,
+          connected: false,
+          isPrimary: false,
+          status: 'inactive',
+        },
       };
-      
-      setIntegrationStatus(status);
-      console.log('[ERPScreen] ERP data loaded successfully');
-      
+
+      setIntegrationStatus(updatedStatus);
     } catch (error) {
       console.error('[ERPScreen] Error loading ERP data:', error);
       Alert.alert('Error', 'Failed to load ERP integration data');
@@ -151,7 +149,7 @@ const ERPScreen: React.FC = () => {
       case 'active': return COLORS.success;
       case 'error': return COLORS.error;
       case 'pending': return COLORS.warning;
-      default: return COLORS.textLight;
+      default: return COLORS.textSecondary;
     }
   };
 
@@ -168,65 +166,61 @@ const ERPScreen: React.FC = () => {
     type: keyof ERPIntegrationStatus,
     title: string,
     description: string,
-    icon: string
+    iconName: string
   ) => {
-    if (!integrationStatus || !erpPermissions) return null;
-    
     const integration = integrationStatus[type];
-    const permission = erpPermissions[type];
-    
-    if (!integration.available) {
-      return (
-        <View key={type} style={[styles.card, styles.disabledCard]}>
-          <View style={styles.cardHeader}>
-            <View style={styles.cardIcon}>
-              <Ionicons name={icon as any} size={24} color={COLORS.textLight} />
-            </View>
-            <View style={styles.cardInfo}>
-              <Text style={[styles.cardTitle, styles.disabledText]}>{title}</Text>
-              <Text style={[styles.cardDescription, styles.disabledText]}>Not available in your license</Text>
-            </View>
-            <Ionicons name="lock-closed" size={20} color={COLORS.textLight} />
-          </View>
-        </View>
-      );
-    }
+    const isAvailable = integration.available;
+    const isConnected = integration.connected;
 
     return (
       <TouchableOpacity
         key={type}
-        style={[styles.card, integration.isPrimary && styles.primaryCard]}
-        onPress={() => handleConfigureIntegration(type)}
+        style={[
+          styles.card,
+          integration.isPrimary && styles.primaryCard,
+          !isAvailable && styles.disabledCard
+        ]}
+        onPress={() => isAvailable ? handleConfigureIntegration(type) : null}
+        disabled={!isAvailable}
       >
         <View style={styles.cardHeader}>
-          <View style={styles.cardIcon}>
-            <Ionicons name={icon as any} size={24} color={COLORS.primary} />
+          <View style={[styles.cardIcon, !isAvailable && { backgroundColor: COLORS.grey200 }]}>
+            <Ionicons name={iconName as any} size={24} color={isAvailable ? COLORS.primary : COLORS.textSecondary} />
           </View>
           <View style={styles.cardInfo}>
             <View style={styles.titleRow}>
-              <Text style={styles.cardTitle}>{title}</Text>
+              <Text style={[styles.cardTitle, !isAvailable && styles.disabledText]}>
+                {title}
+              </Text>
               {integration.isPrimary && (
                 <View style={styles.primaryBadge}>
                   <Text style={styles.primaryBadgeText}>PRIMARY</Text>
                 </View>
               )}
+              {!isAvailable && (
+                <Ionicons name="lock-closed" size={20} color={COLORS.textSecondary} />
+              )}
             </View>
-            <Text style={styles.cardDescription}>{description}</Text>
+            <Text style={[styles.cardDescription, !isAvailable && styles.disabledText]}>
+              {description}
+            </Text>
           </View>
           <View style={styles.statusContainer}>
             <Ionicons 
               name={getStatusIcon(integration.status)} 
-              size={20} 
+              size={24} 
               color={getStatusColor(integration.status)} 
             />
           </View>
         </View>
-        
+
         <View style={styles.cardFooter}>
           <Text style={[styles.statusText, { color: getStatusColor(integration.status) }]}>
-            {integration.connected ? 'Connected' : 'Not Connected'}
+            {isConnected ? 'Connected' : isAvailable ? 'Not Connected' : 'Not Available in your license'}
           </Text>
-          <Text style={styles.configureText}>Tap to configure</Text>
+          {isAvailable && (
+            <Text style={styles.configureText}>Tap to configure</Text>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -234,154 +228,164 @@ const ERPScreen: React.FC = () => {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
+      <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={COLORS.primary} />
         <Text style={styles.loadingText}>Loading ERP integrations...</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (!currentCompany) {
     return (
-      <View style={styles.errorContainer}>
-        <Ionicons name="business-outline" size={48} color={COLORS.textLight} />
+      <SafeAreaView style={styles.errorContainer}>
+        <Ionicons name="business-outline" size={48} color={COLORS.textSecondary} />
         <Text style={styles.errorTitle}>No Company Selected</Text>
         <Text style={styles.errorText}>Please select a company to view ERP integrations</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <ScrollView 
-      style={styles.container}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-      }
-    >
-      <View style={styles.header}>
-        <Text style={styles.title}>ERP Integrations</Text>
-        <Text style={styles.subtitle}>
-          Connect your quality control data with enterprise systems
-        </Text>
-      </View>
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView 
+        style={styles.container}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>ERP Integration</Text>
+          <Text style={styles.subtitle}>
+            ERP Integrations{'\n'}Connect your quality control data with enterprise systems
+          </Text>
+        </View>
 
-      <View style={styles.companyInfo}>
-        <Text style={styles.companyName}>{currentCompany.name}</Text>
-        <Text style={styles.companyCode}>Company Code: {currentCompany.code}</Text>
-      </View>
+        <View style={styles.companyInfo}>
+          <Text style={styles.companyName}>{currentCompany.name}</Text>
+          <Text style={styles.companyCode}>Company Code: {currentCompany.code}</Text>
+        </View>
 
-      <View style={styles.integrationsContainer}>
-        {renderIntegrationCard(
-          'salesforce',
-          'Salesforce (AvSight)',
-          'Sync batches and photos with Salesforce CRM',
-          'cloud-outline'
-        )}
-        
-        {renderIntegrationCard(
-          'sharepoint',
-          'Microsoft SharePoint',
-          'Store and organize files in SharePoint',
-          'folder-outline'
-        )}
-        
-        {renderIntegrationCard(
-          'sap',
-          'SAP',
-          'Enterprise resource planning integration',
-          'business-outline'
-        )}
-        
-        {renderIntegrationCard(
-          'dynamics',
-          'Microsoft Dynamics',
-          'Customer relationship management',
-          'people-outline'
-        )}
-      </View>
+        <View style={styles.integrationsContainer}>
+          {renderIntegrationCard(
+            'salesforce',
+            'Salesforce (AvSight)',
+            'Sync batches and photos with Salesforce CRM',
+            'cloud-outline'
+          )}
+          
+          {renderIntegrationCard(
+            'sharepoint',
+            'Microsoft SharePoint',
+            'Store and organize files in SharePoint',
+            'folder-outline'
+          )}
+          
+          {renderIntegrationCard(
+            'sap',
+            'SAP',
+            'Not available in your license',
+            'business-outline'
+          )}
+          
+          {renderIntegrationCard(
+            'dynamics',
+            'Microsoft Dynamics',
+            'Not available in your license',
+            'people-outline'
+          )}
+        </View>
 
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>
-          Need additional integrations? Contact support to upgrade your license.
-        </Text>
-      </View>
-    </ScrollView>
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>
+            Need additional integrations? Contact support to upgrade your license.
+          </Text>
+        </View>
+
+        {/* Add padding at bottom for better scrolling */}
+        <View style={{ height: 100 }} />
+      </ScrollView>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   loadingText: {
-    marginTop: SPACING.medium,
+    marginTop: SPACING.md,
     fontSize: FONTS.regular,
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
   },
   errorContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
-    padding: SPACING.xlarge,
+    backgroundColor: COLORS.backgroundSecondary,
+    padding: SPACING.xl,
   },
   errorTitle: {
-    fontSize: FONTS.xlarge,
+    fontSize: FONTS.xLarge,
     fontWeight: FONTS.bold,
     color: COLORS.text,
-    marginTop: SPACING.medium,
-    marginBottom: SPACING.small,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.sm,
   },
   errorText: {
     fontSize: FONTS.regular,
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
     textAlign: 'center',
   },
   header: {
-    padding: SPACING.large,
-    backgroundColor: COLORS.card,
+    padding: SPACING.lg,
+    backgroundColor: COLORS.background,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   title: {
-    fontSize: FONTS.xxlarge,
+    fontSize: FONTS.xxLarge,
     fontWeight: FONTS.bold,
     color: COLORS.text,
-    marginBottom: SPACING.tiny,
+    marginBottom: SPACING.xs,
   },
   subtitle: {
     fontSize: FONTS.regular,
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
   },
   companyInfo: {
-    padding: SPACING.large,
-    backgroundColor: COLORS.card,
-    marginBottom: SPACING.small,
+    padding: SPACING.lg,
+    backgroundColor: COLORS.background,
+    marginBottom: SPACING.sm,
   },
   companyName: {
     fontSize: FONTS.large,
-    fontWeight: FONTS.semiBold,
+    fontWeight: FONTS.bold,
     color: COLORS.text,
   },
   companyCode: {
     fontSize: FONTS.small,
-    color: COLORS.textLight,
-    marginTop: SPACING.tiny,
+    color: COLORS.textSecondary,
+    marginTop: SPACING.xs,
   },
   integrationsContainer: {
-    padding: SPACING.large,
+    padding: SPACING.lg,
   },
   card: {
     ...CARD_STYLES.elevated,
-    marginBottom: SPACING.medium,
-    padding: SPACING.large,
+    marginBottom: SPACING.md,
+    padding: SPACING.lg,
   },
   primaryCard: {
     borderLeftWidth: 4,
@@ -394,7 +398,7 @@ const styles = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.medium,
+    marginBottom: SPACING.md,
   },
   cardIcon: {
     width: 40,
@@ -403,7 +407,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: SPACING.medium,
+    marginRight: SPACING.md,
   },
   cardInfo: {
     flex: 1,
@@ -411,19 +415,19 @@ const styles = StyleSheet.create({
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.tiny,
+    marginBottom: SPACING.xs,
   },
   cardTitle: {
     fontSize: FONTS.large,
-    fontWeight: FONTS.semiBold,
+    fontWeight: FONTS.bold,
     color: COLORS.text,
   },
   primaryBadge: {
     backgroundColor: COLORS.primary,
-    paddingHorizontal: SPACING.small,
+    paddingHorizontal: SPACING.sm,
     paddingVertical: 2,
-    borderRadius: BORDER_RADIUS.small,
-    marginLeft: SPACING.small,
+    borderRadius: BORDER_RADIUS.sm,
+    marginLeft: SPACING.sm,
   },
   primaryBadgeText: {
     fontSize: FONTS.small,
@@ -432,13 +436,13 @@ const styles = StyleSheet.create({
   },
   cardDescription: {
     fontSize: FONTS.regular,
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
   },
   disabledText: {
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
   },
   statusContainer: {
-    marginLeft: SPACING.small,
+    marginLeft: SPACING.sm,
   },
   cardFooter: {
     flexDirection: 'row',
@@ -451,15 +455,15 @@ const styles = StyleSheet.create({
   },
   configureText: {
     fontSize: FONTS.small,
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
   },
   footer: {
-    padding: SPACING.large,
+    padding: SPACING.lg,
     alignItems: 'center',
   },
   footerText: {
     fontSize: FONTS.small,
-    color: COLORS.textLight,
+    color: COLORS.textSecondary,
     textAlign: 'center',
   },
 });

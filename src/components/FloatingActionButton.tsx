@@ -83,7 +83,7 @@ const FloatingActionButton: React.FC<FloatingActionButtonProps> = ({
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 24,
+    bottom: 90, // Increased to clear tab bar (typically ~82px height)
     right: 16,
     zIndex: LAYOUT.zIndex.fab,
     ...SHADOWS.fab,
