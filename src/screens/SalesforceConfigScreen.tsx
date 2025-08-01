@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   SafeAreaView,
   TouchableOpacity,
-  StatusBar,
 } from 'react-native';
 import { Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -27,7 +26,6 @@ import CustomInput from '../components/CustomInput';
 type SalesforceConfigScreenNavigationProp = StackNavigationProp<RootStackParamList>;
 
 type ConnectionStatus = 'idle' | 'testing' | 'success' | 'error';
-type ConfigurationStep = 'setup' | 'test' | 'authenticate' | 'complete';
 
 const SalesforceConfigScreen: React.FC = () => {
   const navigation = useNavigation<SalesforceConfigScreenNavigationProp>();
@@ -59,13 +57,8 @@ const SalesforceConfigScreen: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
-  const [currentStep, setCurrentStep] = useState<ConfigurationStep>('setup');
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  
-  // Status and feedback
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [lastTestTime, setLastTestTime] = useState<string>('');
+  const [statusMessage, setStatusMessage] = useState<string>('Ready to configure');
 
   useEffect(() => {
     loadExistingConfiguration();
@@ -87,22 +80,12 @@ const SalesforceConfigScreen: React.FC = () => {
         console.log('[SalesforceConfig] Found existing configuration');
         setConfig(salesforceIntegration.config as SalesforceConfig);
         
-        // Check if authenticated
         const isActive = salesforceIntegration.status === 'active';
         setIsAuthenticated(isActive);
-        
-        if (isActive) {
-          setCurrentStep('complete');
-          setStatusMessage(`Connected to ${salesforceIntegration.config.instance_url}`);
-          setLastTestTime(new Date(salesforceIntegration.updated_at || '').toLocaleString());
-        } else {
-          setCurrentStep('test');
-          setStatusMessage('Configuration found but not authenticated');
-        }
+        setStatusMessage(isActive ? 'Connected and authenticated' : 'Configuration found but not authenticated');
+        setConnectionStatus(isActive ? 'success' : 'idle');
       } else {
-        console.log('[SalesforceConfig] No existing configuration found');
-        setCurrentStep('setup');
-        setStatusMessage('Ready to configure Salesforce integration');
+        setStatusMessage('No configuration found');
       }
     } catch (error) {
       console.error('[SalesforceConfig] Error loading configuration:', error);
@@ -113,18 +96,10 @@ const SalesforceConfigScreen: React.FC = () => {
   };
 
   const validateConfiguration = (): string | null => {
-    if (!config.client_id.trim()) {
-      return 'Client ID is required';
-    }
-    if (!config.client_secret.trim()) {
-      return 'Client Secret is required';
-    }
-    if (config.client_id.length < 20) {
-      return 'Client ID appears to be invalid (too short)';
-    }
-    if (config.client_secret.length < 20) {
-      return 'Client Secret appears to be invalid (too short)';
-    }
+    if (!config.client_id.trim()) return 'Client ID is required';
+    if (!config.client_secret.trim()) return 'Client Secret is required';
+    if (config.client_id.length < 20) return 'Client ID appears to be invalid (too short)';
+    if (config.client_secret.length < 20) return 'Client Secret appears to be invalid (too short)';
     return null;
   };
 
@@ -144,31 +119,15 @@ const SalesforceConfigScreen: React.FC = () => {
       setConnectionStatus('testing');
       setStatusMessage('Testing connection to Salesforce...');
       
-      console.log('[SalesforceConfig] Testing connection with config:', {
-        client_id: config.client_id.substring(0, 10) + '...',
-        sandbox: config.sandbox,
-        instance_url: config.instance_url || 'auto-detect'
-      });
-
       // First, save the configuration temporarily to test it
       await companyIntegrationsService.configureSalesforce(currentCompany.id, config, user.id);
       
-      // Then test the connection using the company integrations service
+      // Then test the connection
       const result = await companyIntegrationsService.testSalesforceConnection(currentCompany.id);
       
       if (result.success) {
         setConnectionStatus('success');
         setStatusMessage('Connection successful! Ready to authenticate.');
-        setLastTestTime(new Date().toLocaleString());
-        setCurrentStep('authenticate');
-        
-        // Update instance URL if detected from test results
-        if (result.details?.instance_url && result.details.instance_url !== config.instance_url) {
-          setConfig(prev => ({
-            ...prev,
-            instance_url: result.details.instance_url
-          }));
-        }
       } else {
         throw new Error(result.message || 'Connection test failed');
       }
@@ -185,12 +144,23 @@ const SalesforceConfigScreen: React.FC = () => {
       return;
     }
 
+    if (!currentCompany?.id) {
+      Alert.alert('Error', 'Company information is missing');
+      return;
+    }
+
     try {
       setStatusMessage('Starting Salesforce authentication...');
       
-      const result = await salesforceOAuthService.initiateOAuth(config);
+      const result = await salesforceOAuthService.initiateOAuthFlow(currentCompany.id, {
+        clientId: config.client_id,
+        clientSecret: config.client_secret,
+        instanceUrl: config.instance_url,
+        sandbox: config.sandbox,
+        redirectUri: ''
+      });
       
-      if (result.success && result.authUrl) {
+      if (result.authUrl) {
         const supported = await Linking.canOpenURL(result.authUrl);
         if (supported) {
           await Linking.openURL(result.authUrl);
@@ -201,11 +171,7 @@ const SalesforceConfigScreen: React.FC = () => {
             [
               {
                 text: 'I completed authentication',
-                onPress: () => {
-                  setStatusMessage('Verifying authentication...');
-                  // Check authentication status after a delay
-                  setTimeout(checkAuthenticationStatus, 2000);
-                }
+                onPress: checkAuthenticationStatus
               },
               {
                 text: 'Cancel',
@@ -217,7 +183,7 @@ const SalesforceConfigScreen: React.FC = () => {
           Alert.alert('Error', 'Unable to open authentication URL');
         }
       } else {
-        Alert.alert('Error', result.error || 'Failed to start authentication');
+        Alert.alert('Error', 'Failed to start authentication');
       }
     } catch (error) {
       console.error('[SalesforceConfig] Authentication error:', error);
@@ -227,16 +193,11 @@ const SalesforceConfigScreen: React.FC = () => {
 
   const checkAuthenticationStatus = async () => {
     try {
-      // Check if tokens are now available
       if (currentCompany?.id) {
         const tokens = await salesforceOAuthService.getStoredTokens(currentCompany.id);
         if (tokens?.access_token) {
           setIsAuthenticated(true);
-          setCurrentStep('complete');
-          setStatusMessage(`Successfully authenticated with ${config.instance_url}`);
-          setLastTestTime(new Date().toLocaleString());
-          
-          // Save the configuration
+          setStatusMessage('Successfully authenticated with Salesforce');
           await saveConfiguration();
         } else {
           setStatusMessage('Authentication not yet complete. Please try again.');
@@ -258,14 +219,7 @@ const SalesforceConfigScreen: React.FC = () => {
       setSaving(true);
       console.log('[SalesforceConfig] Saving configuration for company:', currentCompany.id);
 
-      await companyIntegrationsService.createOrUpdateIntegration({
-        company_id: currentCompany.id,
-        integration_type: 'salesforce',
-        config: config,
-        status: isAuthenticated ? 'active' : 'inactive',
-        created_by: user.id,
-        updated_by: user.id
-      });
+      await companyIntegrationsService.configureSalesforce(currentCompany.id, config, user.id);
 
       Alert.alert(
         'Success',
@@ -283,7 +237,7 @@ const SalesforceConfigScreen: React.FC = () => {
   const resetConfiguration = () => {
     Alert.alert(
       'Reset Configuration',
-      'This will clear all Salesforce settings and require you to set up the integration again. Are you sure?',
+      'This will clear all Salesforce settings. Are you sure?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -303,51 +257,19 @@ const SalesforceConfigScreen: React.FC = () => {
                 photo: 'Custom_Photo__c'
               },
               field_mappings: {
-                batch_id: 'Batch_ID__c',
-                created_date: 'Created_Date__c',
-                company_id: 'Company_ID__c',
-                identifier: 'Identifier__c',
-                identifier_type: 'Identifier_Type__c',
-                total_photos: 'Total_Photos__c',
-                photo_id: 'Photo_ID__c',
-                batch_reference: 'Photo_Batch__c',
-                file_name: 'File_Name__c',
-                file_size: 'File_Size__c',
-                capture_date: 'Capture_Date__c'
-              }
+                batch_name: 'Name',
+                batch_type: 'Type__c',
+                photo_url: 'Photo_URL__c'
+              },
+              prefix_mappings: {}
             });
             setConnectionStatus('idle');
-            setCurrentStep('setup');
             setIsAuthenticated(false);
-            setStatusMessage('Configuration reset. Ready to start over.');
-            setLastTestTime('');
+            setStatusMessage('Configuration reset');
           }
         }
       ]
     );
-  };
-
-  const getStepIcon = (step: ConfigurationStep) => {
-    switch (step) {
-      case 'setup': return 'settings-outline';
-      case 'test': return 'checkmark-circle-outline';
-      case 'authenticate': return 'key-outline';
-      case 'complete': return 'checkmark-circle';
-      default: return 'help-circle-outline';
-    }
-  };
-
-  const getStepColor = (step: ConfigurationStep) => {
-    if (step === currentStep) return COLORS.primary;
-    if (
-      (step === 'setup') ||
-      (step === 'test' && currentStep !== 'setup') ||
-      (step === 'authenticate' && ['authenticate', 'complete'].includes(currentStep)) ||
-      (step === 'complete' && currentStep === 'complete')
-    ) {
-      return COLORS.success;
-    }
-    return COLORS.grey400;
   };
 
   if (loading) {
@@ -361,110 +283,54 @@ const SalesforceConfigScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar backgroundColor={COLORS.primary} barStyle="light-content" />
-      
-      <ScrollView 
-        style={styles.content}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
-        {/* Modern Header */}
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        
+        {/* Header */}
         <View style={styles.header}>
-          <View style={styles.headerIcon}>
-            <Ionicons name="cloud" size={32} color={COLORS.white} />
-          </View>
-          <Text style={styles.headerTitle}>Salesforce Integration</Text>
-          <Text style={styles.headerSubtitle}>
+          <Ionicons name="cloud-outline" size={48} color={COLORS.primary} />
+          <Text style={styles.title}>Salesforce Integration</Text>
+          <Text style={styles.subtitle}>
             Connect with Salesforce to sync your quality control data
           </Text>
         </View>
 
-        {/* Progress Steps */}
-        <View style={styles.progressContainer}>
-          <Text style={styles.progressTitle}>Setup Progress</Text>
-          <View style={styles.progressSteps}>
-            {[
-              { step: 'setup' as ConfigurationStep, label: 'Configure' },
-              { step: 'test' as ConfigurationStep, label: 'Test' },
-              { step: 'authenticate' as ConfigurationStep, label: 'Authenticate' },
-              { step: 'complete' as ConfigurationStep, label: 'Complete' }
-            ].map((item, index) => (
-              <View key={item.step} style={styles.progressStep}>
-                <View style={[
-                  styles.progressStepIcon,
-                  { backgroundColor: getStepColor(item.step) }
-                ]}>
-                  <Ionicons 
-                    name={getStepIcon(item.step)} 
-                    size={20} 
-                    color={COLORS.white} 
-                  />
-                </View>
-                <Text style={[
-                  styles.progressStepLabel,
-                  { color: getStepColor(item.step) }
-                ]}>
-                  {item.label}
-                </Text>
-                {index < 3 && (
-                  <View style={[
-                    styles.progressStepLine,
-                    { backgroundColor: getStepColor(item.step) }
-                  ]} />
-                )}
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Status Card */}
+        {/* Status */}
         <View style={styles.statusCard}>
-          <View style={styles.statusHeader}>
-            <Ionicons 
-              name={
-                connectionStatus === 'success' ? 'checkmark-circle' :
-                connectionStatus === 'error' ? 'alert-circle' :
-                connectionStatus === 'testing' ? 'sync' : 'information-circle'
-              }
-              size={24}
-              color={
-                connectionStatus === 'success' ? COLORS.success :
-                connectionStatus === 'error' ? COLORS.error :
-                connectionStatus === 'testing' ? COLORS.warning : COLORS.info
-              }
-            />
-            <Text style={styles.statusTitle}>Status</Text>
-          </View>
+          <Ionicons 
+            name={
+              connectionStatus === 'success' ? 'checkmark-circle' :
+              connectionStatus === 'error' ? 'alert-circle' :
+              connectionStatus === 'testing' ? 'sync' : 'information-circle'
+            }
+            size={24}
+            color={
+              connectionStatus === 'success' ? COLORS.success :
+              connectionStatus === 'error' ? COLORS.error :
+              connectionStatus === 'testing' ? COLORS.warning : COLORS.info
+            }
+          />
           <Text style={styles.statusMessage}>{statusMessage}</Text>
-          {lastTestTime && (
-            <Text style={styles.statusTime}>Last tested: {lastTestTime}</Text>
-          )}
         </View>
 
-        {/* Configuration Form */}
+        {/* Configuration */}
         <View style={styles.configSection}>
-          <Text style={styles.sectionTitle}>Salesforce Configuration</Text>
+          <Text style={styles.sectionTitle}>Configuration</Text>
           
           {/* Environment Toggle */}
           <View style={styles.environmentToggle}>
             <Text style={styles.environmentLabel}>Environment</Text>
             <View style={styles.switchContainer}>
-              <Text style={[styles.switchLabel, !config.sandbox && styles.switchLabelActive]}>
-                Production
-              </Text>
+              <Text style={styles.switchLabel}>Production</Text>
               <Switch
                 value={config.sandbox}
                 onValueChange={(value) => setConfig(prev => ({ ...prev, sandbox: value }))}
                 trackColor={{ false: COLORS.primary, true: COLORS.warning }}
                 thumbColor={COLORS.white}
               />
-              <Text style={[styles.switchLabel, config.sandbox && styles.switchLabelActive]}>
-                Sandbox
-              </Text>
+              <Text style={styles.switchLabel}>Sandbox</Text>
             </View>
           </View>
 
-          {/* Credentials */}
           <CustomInput
             label="Consumer Key (Client ID)"
             value={config.client_id}
@@ -489,67 +355,38 @@ const SalesforceConfigScreen: React.FC = () => {
           />
 
           {config.instance_url && (
-            <View style={styles.instanceUrlContainer}>
-              <Text style={styles.instanceUrlLabel}>Detected Instance URL:</Text>
-              <Text style={styles.instanceUrlText}>{config.instance_url}</Text>
-            </View>
+            <Text style={styles.instanceUrl}>
+              Instance: {config.instance_url}
+            </Text>
           )}
         </View>
 
-        {/* Action Buttons */}
-        <View style={styles.actionButtons}>
-          {currentStep === 'setup' && (
-            <CustomButton
-              title="Test Connection"
-              onPress={testConnection}
-              disabled={connectionStatus === 'testing' || !config.client_id || !config.client_secret}
-              style={styles.primaryButton}
-              variant="primary"
-            />
-          )}
+        {/* Actions */}
+        <View style={styles.actionSection}>
+          <CustomButton
+            title={connectionStatus === 'testing' ? 'Testing...' : 'Test Connection'}
+            onPress={testConnection}
+            disabled={connectionStatus === 'testing' || !config.client_id || !config.client_secret}
+            style={styles.button}
+            variant="secondary"
+          />
 
-          {currentStep === 'test' && connectionStatus === 'success' && (
+          {connectionStatus === 'success' && !isAuthenticated && (
             <CustomButton
               title="Authenticate with Salesforce"
               onPress={authenticateWithSalesforce}
-              style={styles.primaryButton}
+              style={styles.button}
               variant="primary"
             />
           )}
 
-          {currentStep === 'authenticate' && (
+          {isAuthenticated && (
             <CustomButton
-              title="Check Authentication Status"
-              onPress={checkAuthenticationStatus}
-              style={styles.primaryButton}
-              variant="secondary"
-            />
-          )}
-
-          {currentStep === 'complete' && (
-            <View style={styles.completeActions}>
-              <CustomButton
-                title={saving ? 'Saving...' : 'Save Configuration'}
-                onPress={saveConfiguration}
-                disabled={saving}
-                style={styles.saveButton}
-                variant="primary"
-              />
-              <CustomButton
-                title="Test Again"
-                onPress={testConnection}
-                style={styles.secondaryButton}
-                variant="secondary"
-              />
-            </View>
-          )}
-
-          {connectionStatus === 'error' && (
-            <CustomButton
-              title="Retry Test"
-              onPress={testConnection}
-              style={styles.retryButton}
-              variant="secondary"
+              title={saving ? 'Saving...' : 'Save Configuration'}
+              onPress={saveConfiguration}
+              disabled={saving}
+              style={styles.button}
+              variant="primary"
             />
           )}
 
@@ -558,67 +395,24 @@ const SalesforceConfigScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Setup Instructions */}
+        {/* Instructions */}
         <View style={styles.instructionsSection}>
-          <TouchableOpacity 
-            style={styles.instructionsHeader}
-            onPress={() => setShowAdvanced(!showAdvanced)}
-          >
-            <Text style={styles.instructionsTitle}>Setup Instructions</Text>
-            <Ionicons 
-              name={showAdvanced ? "chevron-up" : "chevron-down"} 
-              size={20} 
-              color={COLORS.textSecondary} 
-            />
-          </TouchableOpacity>
-
-          {showAdvanced && (
-            <View style={styles.instructionsContent}>
-              <View style={styles.instructionStep}>
-                <View style={styles.stepNumber}>
-                  <Text style={styles.stepNumberText}>1</Text>
-                </View>
-                <View style={styles.stepContent}>
-                  <Text style={styles.stepTitle}>Create Connected App</Text>
-                  <Text style={styles.stepDescription}>
-                    In Salesforce Setup, create a new Connected App with OAuth settings enabled
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.instructionStep}>
-                <View style={styles.stepNumber}>
-                  <Text style={styles.stepNumberText}>2</Text>
-                </View>
-                <View style={styles.stepContent}>
-                  <Text style={styles.stepTitle}>Configure OAuth</Text>
-                  <Text style={styles.stepDescription}>
-                    Set the callback URL to our secure endpoint
-                  </Text>
-                  <View style={styles.callbackUrl}>
-                    <Text style={styles.callbackUrlText}>
-                      https://luwlvmcixwdtuaffamgk.supabase.co/functions/v1/salesforce-oauth-callback
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.instructionStep}>
-                <View style={styles.stepNumber}>
-                  <Text style={styles.stepNumberText}>3</Text>
-                </View>
-                <View style={styles.stepContent}>
-                  <Text style={styles.stepTitle}>Get Credentials</Text>
-                  <Text style={styles.stepDescription}>
-                    Copy the Consumer Key and Consumer Secret from your Connected App
-                  </Text>
-                </View>
-              </View>
-            </View>
-          )}
+          <Text style={styles.sectionTitle}>Setup Instructions</Text>
+          <Text style={styles.instructionText}>
+            1. Create a Connected App in Salesforce Setup{'\n'}
+            2. Enable OAuth settings and configure callback URL{'\n'}
+            3. Copy the Consumer Key and Consumer Secret{'\n'}
+            4. Test the connection before authenticating
+          </Text>
+          
+          <View style={styles.callbackContainer}>
+            <Text style={styles.callbackLabel}>Callback URL:</Text>
+            <Text style={styles.callbackUrl}>
+              https://luwlvmcixwdtuaffamgk.supabase.co/functions/v1/salesforce-oauth-callback
+            </Text>
+          </View>
         </View>
 
-        {/* Add bottom padding for better scrolling */}
         <View style={{ height: 100 }} />
       </ScrollView>
     </SafeAreaView>
@@ -643,120 +437,42 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-  },
-  scrollContent: {
     padding: SPACING.lg,
   },
   header: {
-    backgroundColor: COLORS.primary,
-    padding: SPACING.xl,
-    borderRadius: BORDER_RADIUS.lg,
     alignItems: 'center',
     marginBottom: SPACING.lg,
-    ...CARD_STYLES.shadow,
+    ...CARD_STYLES.elevated,
   },
-  headerIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: SPACING.md,
-  },
-  headerTitle: {
+  title: {
     fontSize: FONTS.xxLarge,
     fontWeight: FONTS.bold,
-    color: COLORS.white,
-    textAlign: 'center',
+    color: COLORS.text,
+    marginTop: SPACING.md,
     marginBottom: SPACING.sm,
+    textAlign: 'center',
   },
-  headerSubtitle: {
+  subtitle: {
     fontSize: FONTS.regular,
-    color: 'rgba(255,255,255,0.9)',
+    color: COLORS.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
   },
-  progressContainer: {
-    backgroundColor: COLORS.background,
-    padding: SPACING.lg,
-    borderRadius: BORDER_RADIUS.lg,
-    marginBottom: SPACING.lg,
-    ...CARD_STYLES.shadow,
-  },
-  progressTitle: {
-    fontSize: FONTS.large,
-    fontWeight: FONTS.bold,
-    color: COLORS.text,
-    marginBottom: SPACING.md,
-    textAlign: 'center',
-  },
-  progressSteps: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  progressStep: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  progressStepIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: SPACING.sm,
-  },
-  progressStepLabel: {
-    fontSize: FONTS.small,
-    fontWeight: FONTS.mediumWeight,
-    textAlign: 'center',
-  },
-  progressStepLine: {
-    position: 'absolute',
-    top: 20,
-    left: '50%',
-    right: '-50%',
-    height: 2,
-    zIndex: -1,
-  },
   statusCard: {
-    backgroundColor: COLORS.background,
-    padding: SPACING.lg,
-    borderRadius: BORDER_RADIUS.lg,
-    marginBottom: SPACING.lg,
-    ...CARD_STYLES.shadow,
-  },
-  statusHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
-  },
-  statusTitle: {
-    fontSize: FONTS.large,
-    fontWeight: FONTS.bold,
-    color: COLORS.text,
-    marginLeft: SPACING.sm,
+    marginBottom: SPACING.lg,
+    ...CARD_STYLES.elevated,
   },
   statusMessage: {
     fontSize: FONTS.regular,
-    color: COLORS.textSecondary,
-    lineHeight: 20,
-    marginBottom: SPACING.sm,
-  },
-  statusTime: {
-    fontSize: FONTS.small,
-    color: COLORS.textSecondary,
-    fontStyle: 'italic',
+    color: COLORS.text,
+    marginLeft: SPACING.md,
+    flex: 1,
   },
   configSection: {
-    backgroundColor: COLORS.background,
-    padding: SPACING.lg,
-    borderRadius: BORDER_RADIUS.lg,
     marginBottom: SPACING.lg,
-    ...CARD_STYLES.shadow,
+    ...CARD_STYLES.elevated,
   },
   sectionTitle: {
     fontSize: FONTS.large,
@@ -783,52 +499,24 @@ const styles = StyleSheet.create({
   },
   switchLabel: {
     fontSize: FONTS.regular,
-    color: COLORS.textSecondary,
-    marginHorizontal: SPACING.md,
-  },
-  switchLabelActive: {
     color: COLORS.text,
-    fontWeight: FONTS.bold,
+    marginHorizontal: SPACING.md,
   },
   input: {
     marginBottom: SPACING.md,
   },
-  instanceUrlContainer: {
-    backgroundColor: COLORS.infoLight,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.info,
-    marginTop: SPACING.md,
-  },
-  instanceUrlLabel: {
-    fontSize: FONTS.small,
-    fontWeight: FONTS.bold,
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  instanceUrlText: {
+  instanceUrl: {
     fontSize: FONTS.small,
     color: COLORS.info,
-    fontFamily: 'monospace',
+    textAlign: 'center',
+    marginTop: SPACING.md,
+    fontStyle: 'italic',
   },
-  actionButtons: {
+  actionSection: {
     marginBottom: SPACING.lg,
+    ...CARD_STYLES.elevated,
   },
-  primaryButton: {
-    marginBottom: SPACING.md,
-  },
-  completeActions: {
-    gap: SPACING.md,
-  },
-  saveButton: {
-    backgroundColor: COLORS.success,
-    marginBottom: SPACING.sm,
-  },
-  secondaryButton: {
-    marginBottom: SPACING.sm,
-  },
-  retryButton: {
+  button: {
     marginBottom: SPACING.md,
   },
   resetButton: {
@@ -841,70 +529,31 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
   instructionsSection: {
-    backgroundColor: COLORS.background,
-    borderRadius: BORDER_RADIUS.lg,
-    overflow: 'hidden',
-    ...CARD_STYLES.shadow,
+    ...CARD_STYLES.elevated,
   },
-  instructionsHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: SPACING.lg,
-    backgroundColor: COLORS.grey50,
-  },
-  instructionsTitle: {
-    fontSize: FONTS.large,
-    fontWeight: FONTS.bold,
-    color: COLORS.text,
-  },
-  instructionsContent: {
-    padding: SPACING.lg,
-  },
-  instructionStep: {
-    flexDirection: 'row',
+  instructionText: {
+    fontSize: FONTS.regular,
+    color: COLORS.textSecondary,
+    lineHeight: 22,
     marginBottom: SPACING.lg,
   },
-  stepNumber: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: SPACING.md,
+  callbackContainer: {
+    backgroundColor: COLORS.grey50,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.primary,
   },
-  stepNumberText: {
-    fontSize: FONTS.regular,
-    fontWeight: FONTS.bold,
-    color: COLORS.white,
-  },
-  stepContent: {
-    flex: 1,
-  },
-  stepTitle: {
-    fontSize: FONTS.medium,
+  callbackLabel: {
+    fontSize: FONTS.small,
     fontWeight: FONTS.bold,
     color: COLORS.text,
     marginBottom: SPACING.xs,
   },
-  stepDescription: {
-    fontSize: FONTS.regular,
-    color: COLORS.textSecondary,
-    lineHeight: 20,
-    marginBottom: SPACING.sm,
-  },
   callbackUrl: {
-    backgroundColor: COLORS.grey100,
-    padding: SPACING.sm,
-    borderRadius: BORDER_RADIUS.sm,
-    borderLeftWidth: 3,
-    borderLeftColor: COLORS.primary,
-  },
-  callbackUrlText: {
     fontSize: FONTS.small,
-    fontFamily: 'monospace',
     color: COLORS.primary,
+    fontFamily: 'monospace',
   },
 });
 
