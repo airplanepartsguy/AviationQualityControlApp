@@ -24,7 +24,6 @@ import NetworkStatusIndicator from '../components/NetworkStatusIndicator';
 import ErpSyncStatusIndicator from '../components/ErpSyncStatusIndicator';
 import QuickSyncButton from '../components/QuickSyncButton';
 import UploadStatusCard from '../components/UploadStatusCard';
-import { QuickCaptureButton } from '../components/FloatingActionButton';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, CARD_STYLES, BUTTON_STYLES } from '../styles/theme'; 
 import { Ionicons } from '@expo/vector-icons'; 
 import { RootStackParamList } from '../types/navigation';
@@ -210,18 +209,7 @@ const DashboardScreen: React.FC = () => {
     });
   };
 
-  const handleQuickCapture = useCallback(() => {
-    logAnalyticsEvent('QuickCapturePressed');
-    if (!user || !user.id) {
-      console.warn('User ID is null, cannot navigate from handleQuickCapture.');
-      animateQuickAction(1); // Reset animation if we bail early
-      return;
-    }
-    animateQuickAction(0.8, () => {
-      navigation.navigate('PhotoCapture', { mode: 'Batch', userId: user?.id, quickCapture: true, orderNumber: undefined, inventoryId: undefined });
-      setTimeout(() => animateQuickAction(1), 100);
-    });
-  }, [user?.id, navigation, animateQuickAction]);
+
 
   // Quick actions configuration
   const quickActions: QuickAction[] = useMemo(() => [
@@ -396,15 +384,9 @@ const DashboardScreen: React.FC = () => {
           )}
         </View>
 
-        {/* Add padding at bottom for FAB */}
-        <View style={{ height: 100 }} />
+        {/* Add padding at bottom for better scrolling */}
+        <View style={{ height: 50 }} />
       </ScrollView>
-
-      {/* Floating Action Button */}
-      <QuickCaptureButton 
-        onPress={handleQuickCapture}
-        disabled={!user?.id}
-      />
 
       {/* Legacy Sync Panel (keeping for now) */}
       <SyncStatusPanel />
