@@ -22,6 +22,7 @@ import {
   updatePhotoMetadata,
   ensureDbOpen
 } from './databaseService';
+import photoSyncService from './photoSyncService';
 
 // Constants
 const SYNC_QUEUE_DIR = `${FileSystem.documentDirectory}sync_queue/`;
@@ -82,6 +83,11 @@ export const initSyncService = async (): Promise<void> => {
     
     isInitialized = true;
     console.log('[SyncService] Sync service initialized successfully');
+    
+    // Start photo sync service for background photo uploads
+    console.log('[SyncService] Starting photo sync service...');
+    photoSyncService.startPhotoSync();
+    console.log('[SyncService] Photo sync service started successfully');
     
     // Perform initial sync check
     const isConnected = (await NetInfo.fetch()).isConnected;
