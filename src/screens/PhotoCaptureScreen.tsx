@@ -30,7 +30,9 @@ import * as Haptics from 'expo-haptics';
 import * as Crypto from 'expo-crypto';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PinchGestureHandler, State as GestureState, GestureHandlerRootView } from 'react-native-gesture-handler';
-import { uploadPhoto } from '../services/supabaseService'; // Add this import
+import { uploadPhoto } from '../services/supabaseService';
+import PhotoTypeSelector from '../components/PhotoTypeSelector';
+import WorkflowProgress from '../components/WorkflowProgress';
 
 // Define LocationData interface for location tracking
 interface LocationData {
@@ -78,9 +80,9 @@ const styles = StyleSheet.create({
   },
   // Main bottom action area with merged styles
   bottomActionArea: {
-    paddingHorizontal: SPACING.medium,
-    paddingBottom: SPACING.medium, // Base padding, safe area insets will add to this if needed via SafeAreaView
-    paddingVertical: SPACING.medium,
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.md, // Base padding, safe area insets will add to this if needed via SafeAreaView
+    paddingVertical: SPACING.md,
     backgroundColor: COLORS.grey900,
     borderTopWidth: 1,
     borderTopColor: COLORS.grey800,
@@ -101,21 +103,21 @@ const styles = StyleSheet.create({
   // Aviation-specific styles for part identification
   partGuidanceText: {
     fontSize: FONTS.regular,
-    fontWeight: FONTS.semiBold,
+    fontWeight: FONTS.bold,
     color: COLORS.white,
-    marginBottom: SPACING.medium,
+    marginBottom: SPACING.md,
     textAlign: 'center',
     backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: SPACING.medium,
-    paddingVertical: SPACING.small,
-    borderRadius: BORDER_RADIUS.small,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
   },
   formatExamplesContainer: {
-    marginTop: SPACING.medium,
+    marginTop: SPACING.md,
     backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: SPACING.medium,
-    paddingVertical: SPACING.small,
-    borderRadius: BORDER_RADIUS.small,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
   },
   formatExampleText: {
     fontSize: FONTS.small,
@@ -878,6 +880,8 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
   const [lastCapturedPhoto, setLastCapturedPhoto] = useState<PhotoData | null>(null);
   const [showManualInput, setShowManualInput] = useState(false);
   const [selectedPhotoTitle, setSelectedPhotoTitle] = useState<string>('General Picture');
+  const [selectedPhotoType, setSelectedPhotoType] = useState<string>('general');
+  const [isDefectMode, setIsDefectMode] = useState(false);
 
   const [feedback, setFeedback] = useState<{visible: boolean, message: string, type: 'success' | 'error', detail: string}>({visible: false, message: '', type: 'success', detail: ''});
 

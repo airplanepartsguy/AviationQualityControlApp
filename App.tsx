@@ -1,13 +1,13 @@
 import 'react-native-gesture-handler'; // Must be at the top
 import React, { useEffect } from 'react';
-import { Platform, ActivityIndicator, View, StyleSheet, Animated, Easing, Pressable } from 'react-native'; // Import Platform
-import { NavigationContainer, DefaultTheme, useNavigation } from '@react-navigation/native';
+import { Platform, ActivityIndicator, View, StyleSheet } from 'react-native';
+import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
+import { navigationRef, NavigationService } from './src/services/navigationService';
 import * as Linking from 'expo-linking';
-import { createStackNavigator, StackNavigationProp } from '@react-navigation/stack';
+import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import Ionicons from '@expo/vector-icons/Ionicons'; // For tab icons
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import * as Haptics from 'expo-haptics';
 
 // Import Screens
 import LoginScreen from './src/screens/LoginScreen';
@@ -18,19 +18,18 @@ import DefectHighlightingScreen from './src/screens/DefectHighlightingScreen';
 import AnnotationScreen from './src/screens/AnnotationScreen'; 
 import BatchPreviewScreen from './src/screens/BatchPreviewScreen'; 
 import PDFGenerationScreen from './src/screens/PDFGenerationScreen';
-// import AnalyticsScreen from './src/screens/AnalyticsScreen'; // Replaced by History, ERP, Settings
 import DebugScreen from './src/screens/DebugScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import ERPScreen from './src/screens/ERPScreen';
-import AllBatchesScreen from './src/screens/AllBatchesScreen'; // Import the new screen
+import AllBatchesScreen from './src/screens/AllBatchesScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import AdminScreen from './src/screens/AdminScreen';
 import SalesforceConfigScreen from './src/screens/SalesforceConfigScreen';
 import SalesforceTestScreen from './src/screens/SalesforceTestScreen';
 
 // Import Navigation Types
-import { RootStackParamList, BottomTabParamList } from './src/types/navigation'; // Updated types
-import { COLORS, FONTS, SHADOWS } from './src/styles/theme'; // Import theme
+import { RootStackParamList, BottomTabParamList } from './src/types/navigation';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from './src/styles/theme';
 
 // Import Contexts
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
@@ -42,6 +41,7 @@ import networkService from './src/services/networkService';
 
 // Import Components
 import SyncManager from './src/components/SyncManager';
+import { QuickCaptureButton } from './src/components/FloatingActionButton';
 
 // Define a separate stack for Authentication flow
 export type AuthStackParamList = {
@@ -50,229 +50,137 @@ export type AuthStackParamList = {
 };
 
 const AuthStack = createStackNavigator<AuthStackParamList>();
-const RootStack = createStackNavigator<RootStackParamList>(); // Keep RootStack for main app
-const Tab = createBottomTabNavigator<BottomTabParamList>(); // Use BottomTabParamList
+const RootStack = createStackNavigator<RootStackParamList>();
+const Tab = createBottomTabNavigator<BottomTabParamList>();
 
-// Define a theme for React Navigation to use our app colors
+// Enhanced theme for React Navigation
 const AppTheme = {
   ...DefaultTheme,
-  dark: false, // Assuming light mode
+  dark: false,
   colors: {
     ...DefaultTheme.colors,
     primary: COLORS.primary,
     background: COLORS.background,
-    card: COLORS.card, // Used for headers, tab bars etc.
+    card: COLORS.surface,
     text: COLORS.text, 
     border: COLORS.border,
-    notification: COLORS.accent, // Use accent for notifications
+    notification: COLORS.accent,
   },
 };
 
-// Placeholder component for the action tab
-const EmptyScreen = () => null;
-
-// Custom Capture Button Component
-const CustomCaptureButton = () => {
-  const scaleValue = React.useRef(new Animated.Value(1)).current;
-  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
-  const { user, isAuthenticated, isLoading: isAuthLoading } = useAuth(); // Get auth state
-  const userId = user?.id; // Derive userId
-
-  return (
-    <Pressable
-      // onPressIn={handlePressIn}
-      // onPressOut={handlePressOut}
-      // onPress will be triggered after onPressOut
-      onPress={() => {
-        if (isAuthenticated && userId) { // Use isAuthenticated and the derived userId
-          navigation.navigate('PhotoCapture', { 
-            mode: 'Single', 
-            userId: userId,
-            quickCapture: true 
-          });
-        } else {
-          // Handle case where user is not authenticated or userId is missing
-          // Optionally, navigate to login or show a message
-          console.warn('User not authenticated or userId missing for capture action.');
-          // Example: navigation.navigate('Login'); 
-        }
-      }}
-      style={{
-        // Style for the Pressable container, e.g., for layout within the tab bar
-        // position: 'relative', // Already default
-        // width: 70, // Dimensions will be controlled by Animated.View
-        // height: 70,
-        // borderRadius: 35, 
-        justifyContent: 'center',
-        alignItems: 'center',
-      }}
-    >
-      <Animated.View
-        style={{
-          transform: [{ scale: scaleValue }],
-          width: 70, // Keep basic dimensions
-          height: 70,
-          backgroundColor: 'magenta', // Use a very obvious color for debugging
-          borderRadius: 35,
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
-      >
-        <Ionicons name="camera" size={36} color={COLORS.white} />
-      </Animated.View>
-    </Pressable>
-  );
-};
-
-// --- Bottom Tab Navigator ---
-// This will be nested inside the main Stack Navigator
-function MainTabs() { // Renamed from MainAppTabs
-  // Removed user ID logic, handled by AuthContext now
-
+// Enhanced Tab Navigator with better workflow-focused structure
+function MainTabs() {
   return (
     <Tab.Navigator
-      // Ensure Tab.Navigator has access to stack navigation for the custom button
-      // This might require passing navigation prop down or using useNavigation hook inside CustomTabBarButton
-
       screenOptions={({ route }) => ({
         tabBarIcon: ({ focused, color, size }) => {
           let iconName: keyof typeof Ionicons.glyphMap;
 
-          // Use updated tab names
-          if (route.name === 'HomeTab') {
-            iconName = focused ? 'home' : 'home-outline';
-          } else if (route.name === 'HistoryTab') {
-            iconName = focused ? 'time' : 'time-outline';
-          } else if (route.name === 'ERPTab') {
-            iconName = focused ? 'cloud-upload' : 'cloud-upload-outline';
-          } else if (route.name === 'SettingsTab') {
-            iconName = focused ? 'settings' : 'settings-outline';
-          } else {
-            iconName = 'ellipse-outline'; // Default for CaptureActionTab or any other unexpected tab
+          switch (route.name) {
+            case 'HomeTab':
+              iconName = focused ? 'home' : 'home-outline';
+              break;
+            case 'AllBatchesTab':
+              iconName = focused ? 'folder-open' : 'folder-open-outline';
+              break;
+            case 'ERPTab':
+              iconName = focused ? 'cloud-upload' : 'cloud-upload-outline';
+              break;
+            case 'HistoryTab':
+              iconName = focused ? 'time' : 'time-outline';
+              break;
+            case 'SettingsTab':
+              iconName = focused ? 'settings' : 'settings-outline';
+              break;
+            default:
+              iconName = 'ellipse-outline';
           }
-          // Added nullish coalescing for safety, though logic covers cases
-          return <Ionicons name={iconName ?? 'alert-circle-outline'} size={size} color={color} />;
+
+          return <Ionicons name={iconName} size={size} color={color} />;
         },
         tabBarActiveTintColor: COLORS.primary,
-        tabBarInactiveTintColor: COLORS.grey600,
+        tabBarInactiveTintColor: COLORS.grey500,
         tabBarStyle: {
-          backgroundColor: COLORS.card, // Use card color for tab background
+          backgroundColor: COLORS.surface,
           borderTopColor: COLORS.border,
-          borderTopWidth: StyleSheet.hairlineWidth, // Use hairline for subtle border
-          // Add some padding for iOS bottom safe area if needed, or handle with SafeAreaView
-          paddingBottom: Platform.OS === 'ios' ? 5 : 0, 
-          height: Platform.OS === 'ios' ? 90 : 60, // Adjust height if needed
+          borderTopWidth: StyleSheet.hairlineWidth,
+          paddingBottom: Platform.OS === 'ios' ? 8 : 4,
+          paddingTop: 8,
+          height: Platform.OS === 'ios' ? 88 : 64,
+          ...SHADOWS.small,
         },
         tabBarLabelStyle: {
           fontSize: FONTS.small,
-          fontWeight: FONTS.mediumWeight, // Use medium weight
+          fontWeight: FONTS.mediumWeight,
+          marginBottom: Platform.OS === 'ios' ? 0 : 4,
+        },
+        tabBarItemStyle: {
+          paddingVertical: 4,
         },
         headerStyle: { 
-          backgroundColor: COLORS.primary, 
-          // Add shadow if desired (more common on iOS)
-          // ...Platform.select({ ios: SHADOWS.small, android: { elevation: 4 } })
-         },
+          backgroundColor: COLORS.primary,
+          borderBottomWidth: 0,
+          elevation: 0,
+          shadowOpacity: 0,
+        },
         headerTintColor: COLORS.white,
-        headerTitleStyle: { fontWeight: FONTS.bold, fontSize: FONTS.large },
-        headerShown: true, // Show header on individual tab screens
+        headerTitleStyle: { 
+          fontWeight: FONTS.bold, 
+          fontSize: FONTS.large 
+        },
+        headerShown: true,
       })}
     >
-      {/* Updated Tab Order: Home, History, ERP, Settings */}
+      {/* Optimized Tab Order for Quality Control Workflow */}
       <Tab.Screen 
         name="HomeTab" 
         component={DashboardScreen} 
-        options={{ title: 'Home' }} 
+        options={{ 
+          title: 'Dashboard',
+          tabBarLabel: 'Home',
+        }} 
       />
-      <Tab.Screen 
-        name="HistoryTab" 
-        component={HistoryScreen} 
-        options={{ title: 'History' }} 
-      />
-      {/* <Tab.Screen 
-        name="CaptureActionTab" 
-        component={EmptyScreen} // Placeholder, button handles action
-        options={{
-          tabBarButton: () => (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-              <CustomCaptureButton />
-            </View>
-          ),
-          tabBarLabel: () => null, // No label for the action button tab
-        }}
-      /> */}
-      <Tab.Screen 
-        name="ERPTab" 
-        component={ERPScreen} 
-        options={{ title: 'ERP' }} 
-      />
-      {/* All Batches Tab */}
       <Tab.Screen
         name="AllBatchesTab"
         component={AllBatchesScreen}
         options={{
-          tabBarLabel: 'All Batches',
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'list-circle' : 'list-circle-outline'} size={size} color={color} />
-          ),
-          title: 'All Batches' // Added title for the header
+          title: 'All Batches',
+          tabBarLabel: 'Batches',
         }}
+      />
+      <Tab.Screen 
+        name="ERPTab" 
+        component={ERPScreen} 
+        options={{ 
+          title: 'ERP Integration',
+          tabBarLabel: 'ERP',
+        }} 
+      />
+      <Tab.Screen 
+        name="HistoryTab" 
+        component={HistoryScreen} 
+        options={{ 
+          title: 'History',
+          tabBarLabel: 'History',
+        }} 
       />
       <Tab.Screen 
         name="SettingsTab" 
         component={SettingsScreen} 
-        options={{ title: 'Settings' }} 
+        options={{ 
+          title: 'Settings',
+          tabBarLabel: 'Settings',
+        }} 
       />
     </Tab.Navigator>
   );
 }
 
-// --- Root Navigator Component (Handles Auth vs Main App) ---
-// Define linking configuration
-const prefix = Linking.createURL('/'); // Resolves to AviationQualityControlApp:// based on app.json scheme
-const linkingConfig = {
-  prefixes: [prefix],
-  config: {
-    screens: {
-      // Map the auth-callback path to the Login screen.
-      // When the app opens with AviationQualityControlApp://auth-callback,
-      // React Navigation will try to navigate to the Login screen.
-      // The Supabase client, initialized within AuthProvider,
-      // should then process the URL tokens (e.g., #access_token=...)
-      // via its onAuthStateChange listener and update the auth state.
-      Login: 'auth-callback',
-      // Map OAuth success callback to Salesforce config screen
-      // When the app opens with AviationQualityControlApp://oauth/success?state=companyId,
-      // React Navigation will navigate to the SalesforceConfig screen
-      SalesforceConfig: 'oauth/success',
-    },
-  },
-};
-
-// Custom Tab Button (Alternative, more structured way if complex)
-// const CustomTabBarButton = ({ children, onPress }) => (
-//   <TouchableOpacity
-//     style={{
-//       top: -25, // Make it pop
-//       justifyContent: 'center',
-//       alignItems: 'center',
-//       width: 70,
-//       height: 70,
-//       borderRadius: 35,
-//       backgroundColor: COLORS.primary, // Use theme color
-//       ...SHADOWS.medium, // Add some shadow
-//     }}
-//     onPress={onPress}
-//   >
-//     <Ionicons name="camera" size={32} color={COLORS.white} />
-//     {/* {children} You might not need children if icon is static */}
-//   </TouchableOpacity>
-// );
-
+// Enhanced Stack Navigator with better screen configuration
 function RootNavigator() {
-  const { isAuthenticated, isLoading } = useAuth(); // This should now be correct
+  const { isAuthenticated, isLoading, user } = useAuth();
 
   if (isLoading) {
-    // Show a loading screen while checking auth state
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={COLORS.primary} />
@@ -281,101 +189,159 @@ function RootNavigator() {
   }
 
   return (
-    <NavigationContainer theme={AppTheme} linking={linkingConfig}>
+    <NavigationContainer ref={navigationRef} theme={AppTheme} linking={linkingConfig}>
       {isAuthenticated ? (
-        <RootStack.Navigator 
-          initialRouteName="MainTabs" // Start with the Tab navigator
-          screenOptions={{ 
-            headerStyle: { backgroundColor: COLORS.primary },
-            headerTintColor: COLORS.white,
-            headerTitleStyle: { fontWeight: FONTS.bold, fontSize: FONTS.large },
-          }}
-        >
-          {/* Main App Screens */}
-          <RootStack.Screen
-            name="MainTabs" // Route name for the tab navigator container
-            component={MainTabs} // Use the updated MainTabs component
-            options={{ 
-              headerShown: false // Hide the Stack Navigator's header for the tabs screen
-            }} 
+        <View style={{ flex: 1 }}>
+          <RootStack.Navigator 
+            initialRouteName="MainTabs"
+            screenOptions={{ 
+              headerStyle: { 
+                backgroundColor: COLORS.primary,
+                borderBottomWidth: 0,
+                elevation: 4,
+                shadowColor: COLORS.black,
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.1,
+                shadowRadius: 4,
+              },
+              headerTintColor: COLORS.white,
+              headerTitleStyle: { 
+                fontWeight: FONTS.bold, 
+                fontSize: FONTS.large 
+              },
+              headerBackTitle: 'Back',
+              gestureEnabled: true,
+              cardStyleInterpolator: ({ current, layouts }) => {
+                return {
+                  cardStyle: {
+                    transform: [
+                      {
+                        translateX: current.progress.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [layouts.screen.width, 0],
+                        }),
+                      },
+                    ],
+                  },
+                };
+              },
+            }}
+          >
+            {/* Main App Screens */}
+            <RootStack.Screen
+              name="MainTabs"
+              component={MainTabs}
+              options={{ 
+                headerShown: false 
+              }} 
+            />
+            
+            {/* Photo Workflow Screens */}
+            <RootStack.Screen 
+              name="PhotoCapture" 
+              component={PhotoCaptureScreen} 
+              options={{ 
+                title: 'Capture Photos',
+                headerRight: () => null, // Remove any default right button
+              }} 
+            />
+            <RootStack.Screen 
+              name="DefectHighlighting" 
+              component={DefectHighlightingScreen} 
+              options={{ 
+                title: 'Mark Defects',
+                presentation: 'modal', // Present as modal for better UX
+              }} 
+            />
+            <RootStack.Screen 
+              name="Annotation" 
+              component={AnnotationScreen} 
+              options={{ 
+                title: 'Add Notes',
+                presentation: 'modal',
+              }} 
+            />
+            
+            {/* Batch Management Screens */}
+            <RootStack.Screen 
+              name="BatchPreview" 
+              component={BatchPreviewScreen} 
+              options={{ 
+                title: 'Review Batch',
+              }} 
+            />
+            <RootStack.Screen 
+              name="PDFGeneration" 
+              component={PDFGenerationScreen} 
+              options={{ 
+                title: 'Generate Report',
+              }} 
+            />
+            
+            {/* Configuration & Admin Screens */}
+            <RootStack.Screen 
+              name="SalesforceConfig" 
+              component={SalesforceConfigScreen} 
+              options={{ 
+                title: 'Salesforce Setup',
+                presentation: 'modal',
+              }} 
+            />
+            <RootStack.Screen 
+              name="SalesforceTest" 
+              component={SalesforceTestScreen} 
+              options={{ 
+                title: 'Test Upload',
+                presentation: 'modal',
+              }} 
+            />
+            <RootStack.Screen 
+              name="Admin" 
+              component={AdminScreen} 
+              options={{ 
+                title: 'Admin Panel',
+                presentation: 'modal',
+              }} 
+            />
+            <RootStack.Screen 
+              name="Debug" 
+              component={DebugScreen} 
+              options={{ 
+                title: 'Debug Tools',
+                presentation: 'modal',
+              }} 
+            />
+          </RootStack.Navigator>
+          
+          {/* Floating Action Button for Quick Photo Capture */}
+          <QuickCaptureButton
+            onPress={() => {
+              if (user?.id) {
+                NavigationService.quickCapture(user.id);
+              }
+            }}
+            disabled={!user?.id}
           />
-          <RootStack.Screen 
-            name="PhotoCapture" 
-            component={PhotoCaptureScreen} 
-            options={{ 
-              title: 'Capture Photo',
-              headerBackTitle: 'Back' // Set explicit back button text
-            }} // Keep header for stack screens
-          />
-          <RootStack.Screen 
-            name="DefectHighlighting" 
-            component={DefectHighlightingScreen} 
-            options={{ 
-              title: 'Highlight Defects',
-              headerBackTitle: 'Back'
-            }} 
-          />
-          <RootStack.Screen 
-            name="Annotation" 
-            component={AnnotationScreen} 
-            options={{ 
-              title: 'Annotate Photo',
-              headerBackTitle: 'Back'
-            }} 
-          />
-          <RootStack.Screen 
-            name="BatchPreview" 
-            component={BatchPreviewScreen} 
-            options={{ 
-              title: 'Review Batch',
-              headerBackTitle: 'Back' // Set explicit back button text
-            }} 
-          />
-          <RootStack.Screen 
-            name="PDFGeneration" 
-            component={PDFGenerationScreen} 
-            options={{ 
-              title: 'Generate PDF Report',
-              headerBackTitle: 'Back'
-            }} 
-          />
-          <RootStack.Screen 
-            name="Debug" 
-            component={DebugScreen} 
-            options={{ 
-              title: 'Debug Tools',
-              headerBackTitle: 'Back'
-            }} 
-          />
-          <RootStack.Screen 
-            name="Admin" 
-            component={AdminScreen} 
-            options={{ 
-              title: 'Admin Panel',
-              headerBackTitle: 'Back'
-            }} 
-          />
-          <RootStack.Screen 
-            name="SalesforceConfig" 
-            component={SalesforceConfigScreen} 
-            options={{ 
-              title: 'Salesforce Configuration',
-              headerBackTitle: 'Back'
-            }} 
-          />
-          <RootStack.Screen 
-            name="SalesforceTest" 
-            component={SalesforceTestScreen} 
-            options={{ 
-              title: 'Salesforce Upload Test',
-              headerBackTitle: 'Back'
-            }} 
-          />
-        </RootStack.Navigator>
+        </View>
       ) : (
         <AuthStack.Navigator
           screenOptions={{ 
-            headerShown: false // Usually hide header for login screen
+            headerShown: false,
+            gestureEnabled: true,
+            cardStyleInterpolator: ({ current, layouts }) => {
+              return {
+                cardStyle: {
+                  transform: [
+                    {
+                      translateX: current.progress.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [layouts.screen.width, 0],
+                      }),
+                    },
+                  ],
+                },
+              };
+            },
           }}
         >
           <AuthStack.Screen name="Login" component={LoginScreen} />
@@ -386,7 +352,19 @@ function RootNavigator() {
   );
 }
 
-// --- Main App Component (Wraps RootNavigator with AuthProvider and SyncProvider) ---
+// Define linking configuration
+const prefix = Linking.createURL('/');
+const linkingConfig = {
+  prefixes: [prefix],
+  config: {
+    screens: {
+      Login: 'auth-callback',
+      SalesforceConfig: 'oauth/success',
+    },
+  },
+};
+
+// Enhanced Main App Component
 const App: React.FC = () => {
   // Initialize network monitoring
   useEffect(() => {
@@ -396,9 +374,7 @@ const App: React.FC = () => {
       unsubscribe();
     };
   }, []);
-  
 
-  
   return (
     <SafeAreaProvider>
       <AuthProvider>
@@ -416,14 +392,12 @@ const App: React.FC = () => {
 
 export default App;
 
-// Removed duplicate StyleSheet import from here
-
-// Add styles for loading container
+// Enhanced styles
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background, // Match app background
+    backgroundColor: COLORS.background,
   },
 });
