@@ -112,6 +112,7 @@ const setupCoreTablesOnly = async (database: SQLite.SQLiteDatabase): Promise<voi
         syncStatus TEXT DEFAULT 'pending',
         lastSyncAttempt TEXT,
         syncError TEXT,
+        supabaseUrl TEXT,
         createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
         updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
         companyId TEXT,

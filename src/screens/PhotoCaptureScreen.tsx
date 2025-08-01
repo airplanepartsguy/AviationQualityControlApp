@@ -30,6 +30,7 @@ import * as Haptics from 'expo-haptics';
 import * as Crypto from 'expo-crypto';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PinchGestureHandler, State as GestureState, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { uploadPhoto } from '../services/supabaseService'; // Add this import
 
 // Define LocationData interface for location tracking
 interface LocationData {
@@ -1381,88 +1382,129 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
     
     console.log(`[PCS_DEBUG] processAndSavePhoto: UI updated immediately for photo ${newPhotoId}`);
     
-    // BACKGROUND DATABASE SAVE (non-blocking)
-    setTimeout(() => {
-      (async () => {
-        try {
-          console.log(`[PCS_DEBUG] processAndSavePhoto: Starting background save for photo ${newPhotoId}`);
-          
-          // Use managed database connection instead of creating new one
-          const database = await openDatabase();
-          console.log(`[PCS_DEBUG] processAndSavePhoto: Got managed database connection`);
-          
-          // Ensure required columns exist (non-blocking)
-          const companyId = currentCompany?.id;
-          if (!companyId) {
-            console.error(`[PCS_DEBUG] processAndSavePhoto: No companyId available for photo ${newPhotoId}`);
-          }
-          
-          console.log(`[PCS_DEBUG] processAndSavePhoto: Using companyId=${companyId}, batchId=${currentBatch.id}`);
-          
-          try {
-            await database.execAsync('ALTER TABLE photos ADD COLUMN companyId TEXT');
-            console.log('[PCS_DEBUG] Added companyId column to photos table');
-          } catch (alterError) {
-            // Column already exists - fine
-            console.log('[PCS_DEBUG] companyId column already exists in photos table');
-          }
-          
-          // Verify the photos table exists and has the right structure
-          const tableInfo = await database.getAllAsync("PRAGMA table_info(photos)");
-          console.log(`[PCS_DEBUG] processAndSavePhoto: photos table structure:`, tableInfo);
-          
-          // Save photo to database with detailed logging
-          console.log(`[PCS_DEBUG] processAndSavePhoto: About to INSERT photo with values:`, {
-            id: newPhotoId,
-            batchId: currentBatch.id,
-            companyId: companyId || 'NULL',
-            photoTitle: photoDataToSave.photoTitle || 'General Picture',
-            uri: photoDataToSave.uri,
-            metadataLength: JSON.stringify(photoDataToSave.metadata || {}).length
-          });
-          
-          const result = await database.runAsync(
-            'INSERT INTO photos (id, batchId, companyId, partNumber, photoTitle, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-              newPhotoId,
-              currentBatch.id,
-              companyId || null,
-              photoDataToSave.partNumber || null,
-              photoDataToSave.photoTitle || 'General Picture',
-              photoDataToSave.uri,
-              JSON.stringify(photoDataToSave.metadata || {}),
-              photoDataToSave.annotations ? JSON.stringify(photoDataToSave.annotations) : null
-            ]
-          );
-          
-          console.log(`[PCS_DEBUG] processAndSavePhoto: Background save completed successfully for photo ${newPhotoId}:`, result);
-          
-          // Verify the photo was actually saved
-          const verifyResult = await database.getFirstAsync(
-            'SELECT id, batchId, photoTitle FROM photos WHERE id = ?',
-            [newPhotoId]
-          );
-          console.log(`[PCS_DEBUG] processAndSavePhoto: Verification query result:`, verifyResult);
-          
-          if (!verifyResult) {
-            throw new Error(`Photo ${newPhotoId} was not found after INSERT - database save may have failed`);
-          }
-          
-        } catch (error) {
-          console.error(`[PCS_DEBUG] processAndSavePhoto: Background save FAILED for photo ${newPhotoId}:`, error);
-          
-          // Try to show error to user if it's a critical failure
-          if (error instanceof Error && error.message.includes('database')) {
-            // Show a subtle error notification
-            setTimeout(() => {
-              showFeedbackAnimation('Photo save error - will retry on sync', 'error');
-            }, 2000);
-          }
-          
-          // Log the full error for debugging
-          logErrorToFile('background_photo_save_error', error instanceof Error ? error : new Error(String(error)));
+    // BACKGROUND DATABASE SAVE AND SUPABASE UPLOAD (non-blocking)
+    setTimeout(async () => {
+      try {
+        console.log(`[PCS_DEBUG] processAndSavePhoto: Starting background save for photo ${newPhotoId}`);
+        
+        // Use managed database connection instead of creating new one
+        const database = await openDatabase();
+        console.log(`[PCS_DEBUG] processAndSavePhoto: Got managed database connection`);
+        
+        // Ensure required columns exist (non-blocking)
+        const companyId = currentCompany?.id;
+        if (!companyId) {
+          console.error(`[PCS_DEBUG] processAndSavePhoto: No companyId available for photo ${newPhotoId}`);
         }
-      })();
+        
+        console.log(`[PCS_DEBUG] processAndSavePhoto: Using companyId=${companyId}, batchId=${currentBatch.id}`);
+        
+        try {
+          await database.execAsync('ALTER TABLE photos ADD COLUMN companyId TEXT');
+          console.log('[PCS_DEBUG] Added companyId column to photos table');
+        } catch (alterError) {
+          // Column already exists - fine
+          console.log('[PCS_DEBUG] companyId column already exists in photos table');
+        }
+        
+        // Verify the photos table exists and has the right structure
+        const tableInfo = await database.getAllAsync("PRAGMA table_info(photos)");
+        console.log(`[PCS_DEBUG] processAndSavePhoto: photos table structure:`, tableInfo);
+        
+        // Save photo to database with detailed logging
+        console.log(`[PCS_DEBUG] processAndSavePhoto: Saving photo to database:`, {
+          id: newPhotoId,
+          batchId: currentBatch.id,
+          companyId: companyId || 'NULL',
+          photoTitle: photoDataToSave.photoTitle || 'General Picture',
+          uri: photoDataToSave.uri,
+          metadataSize: JSON.stringify(photoDataToSave.metadata || {}).length
+        });
+        
+        const result = await database.runAsync(
+          'INSERT INTO photos (id, batchId, companyId, partNumber, photoTitle, uri, metadataJson, annotationsJson) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            newPhotoId,
+            currentBatch.id,
+            companyId || null,
+            photoDataToSave.partNumber || null,
+            photoDataToSave.photoTitle || 'General Picture',
+            photoDataToSave.uri,
+            JSON.stringify(photoDataToSave.metadata || {}),
+            photoDataToSave.annotations ? JSON.stringify(photoDataToSave.annotations) : null
+          ]
+        );
+        
+        console.log(`[PCS_DEBUG] processAndSavePhoto: Background save completed successfully for photo ${newPhotoId}:`, result);
+        
+        // Verify the photo was actually saved
+        const verifyResult = await database.getFirstAsync(
+          'SELECT id, batchId, photoTitle FROM photos WHERE id = ?',
+          [newPhotoId]
+        );
+        console.log(`[PCS_DEBUG] processAndSavePhoto: Verification query result:`, verifyResult);
+        
+        if (!verifyResult) {
+          throw new Error(`Photo ${newPhotoId} was not found after INSERT - database save may have failed`);
+        }
+        
+        // UPLOAD TO SUPABASE BUCKET (NEW: Fix for missing bucket uploads)
+        if (companyId && currentBatch.referenceId) {
+          try {
+            console.log(`[PCS_DEBUG] processAndSavePhoto: Starting Supabase bucket upload for photo ${newPhotoId}`);
+            
+            const fileName = `${newPhotoId}_${Date.now()}.jpg`;
+            const publicUrl = await uploadPhoto(
+              photoDataToSave.uri,
+              fileName,
+              companyId,
+              currentBatch.referenceId
+            );
+            
+            console.log(`[PCS_DEBUG] processAndSavePhoto: Photo uploaded to Supabase bucket successfully: ${publicUrl}`);
+            
+            // Update photo record with public URL
+            await database.runAsync(
+              'UPDATE photos SET supabaseUrl = ? WHERE id = ?',
+              [publicUrl, newPhotoId]
+            );
+            
+            // Update sync status to uploaded
+            await database.runAsync(
+              'UPDATE photos SET syncStatus = ? WHERE id = ?',
+              ['uploaded', newPhotoId]
+            );
+            
+            logAnalyticsEvent('photo_uploaded_to_supabase', { 
+              batchId: currentBatch.id, 
+              photoId: newPhotoId, 
+              companyId,
+              referenceId: currentBatch.referenceId
+            });
+            
+          } catch (uploadError) {
+            console.error(`[PCS_DEBUG] processAndSavePhoto: Supabase upload failed for photo ${newPhotoId}:`, uploadError);
+            
+            // Update sync status to failed but don't block the UI
+            await database.runAsync(
+              'UPDATE photos SET syncStatus = ? WHERE id = ?',
+              ['upload_failed', newPhotoId]
+            );
+            
+            logAnalyticsEvent('photo_upload_failed', { 
+              batchId: currentBatch.id, 
+              photoId: newPhotoId, 
+              error: uploadError instanceof Error ? uploadError.message : String(uploadError)
+            });
+          }
+        } else {
+          console.warn(`[PCS_DEBUG] processAndSavePhoto: Cannot upload to Supabase - missing companyId (${companyId}) or referenceId (${currentBatch.referenceId})`);
+        }
+        
+      } catch (error) {
+        console.error(`[PCS_DEBUG] processAndSavePhoto: Background operation failed for photo ${newPhotoId}:`, error);
+                 logErrorToFile('processAndSavePhoto_background', error instanceof Error ? error : new Error(String(error)));
+      }
     }, 0); // Execute on next tick to not block UI
 
   }, [currentBatch, userId, showFeedbackAnimation, setPhotoBatch, setLastCapturedPhoto, logAnalyticsEvent, selectedPhotoTitle, currentCompany, logErrorToFile]);
