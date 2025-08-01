@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system';
 import { PhotoBatch, PhotoData, PhotoMetadata, AnnotationData } from '../types/data';
 import DatabaseMigrationService from './databaseMigrationService';
 import DatabaseResetUtility from '../utils/databaseReset';
+import { errorLogger } from '../utils/errorLogger';
 
 // Global database instance to prevent multiple connections
 let globalDb: SQLite.SQLiteDatabase | null = null;
@@ -39,9 +40,9 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         await db.execAsync('PRAGMA journal_mode = WAL');
         console.log('[DB_DEBUG] openDatabase: WAL mode set successfully');
         
-        // Set busy timeout to handle locking
+        // Set busy timeout to handle locking (increased from 5 to 30 seconds)
         console.log('[DB_DEBUG] openDatabase: Setting busy timeout');
-        await db.execAsync('PRAGMA busy_timeout = 5000');
+        await db.execAsync('PRAGMA busy_timeout = 30000');
         console.log('[DB_DEBUG] openDatabase: Busy timeout set successfully');
         
         // Run basic table setup (core tables only)
@@ -57,21 +58,38 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         console.log('[DB_DEBUG] openDatabase: Starting background initialization');
         initializeFullDatabase(db).catch(error => {
           console.error('[DB_DEBUG] Background initialization failed:', error);
+          // Don't fail the main database connection for background initialization failures
         });
         
         return db;
       } catch (error) {
         console.error('[DB_DEBUG] openDatabase: Error during database opening:', error);
         dbOpenPromise = null; // Clear the promise on error
+        
+        // Log database connection errors
+        errorLogger.logDatabaseError(
+          error instanceof Error ? error : new Error('Database connection failed'),
+          'openDatabase',
+          { operation: 'database_connection', additionalData: { phase: 'connection' } }
+        );
+        
         throw error;
       }
     })(),
     new Promise<never>((_, reject) => 
       setTimeout(() => {
-        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 15 seconds');
+        const timeoutError = new Error('Database open timeout - please try restarting the app');
+        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 30 seconds');
         dbOpenPromise = null; // Clear the promise on timeout
-        reject(new Error('Database open timeout'));
-      }, 15000) // Reduced back to 15 seconds since we're only doing core setup
+        
+        // Log timeout errors
+        errorLogger.logDatabaseError(timeoutError, 'openDatabase', { 
+          operation: 'database_timeout',
+          additionalData: { phase: 'timeout', timeoutDuration: 30000 }
+        });
+        
+        reject(timeoutError);
+      }, 30000) // Increased from 15 to 30 seconds
     )
   ]);
   
