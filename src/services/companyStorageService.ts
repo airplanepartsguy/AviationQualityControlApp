@@ -118,7 +118,12 @@ class CompanyStorageService {
    * Generate unique bucket name for company
    */
   private generateBucketName(companyId: string): string {
-    // Create a clean, DNS-compliant bucket name
+    // Special case for TurbineWorks - use existing bucket
+    if (companyId === '70b41ce9-bf19-4b1a-9c37-5b00cb33cadf') {
+      return 'turbineworks';
+    }
+    
+    // For all other companies, use secure UUID-based naming
     const cleanId = companyId.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     return `company-${cleanId}-photos`;
   }
