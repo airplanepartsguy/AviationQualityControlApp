@@ -9,6 +9,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import companyIntegrationsService from '../services/companyIntegrationsService';
+import { errorLogger } from '../utils/errorLogger';
 
 const logFilePath = `${FileSystem.documentDirectory}errorLog.txt`; 
 
@@ -555,118 +556,58 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
 
   // Debug OAuth callback process
   const debugOAuthCallback = async () => {
-    if (!currentCompany) return;
-    setIsLoading(true);
+    console.log('🔧 [DEBUG] Debugging OAuth callback handling...');
     
+    const testData = {
+      code: 'test_code_123',
+      state: 'test_state_456',
+      instance_url: 'https://turbineworks-dev-ed.develop.my.salesforce.com'
+    };
+    
+    console.log('[DEBUG] Test OAuth callback data:', testData);
+  };
+
+  const dumpRecentErrors = async () => {
+    setIsLoading(true);
     try {
-      console.log('\n🔍 === OAUTH CALLBACK DEBUG ===');
-      console.log(`Company: ${currentCompany.name} (${currentCompany.id})`);
+      console.log('🚨 [ERROR_DUMP] Dumping recent errors...');
       
-      // 1. Check for recent OAuth callbacks
-      console.log('\n1️⃣ CHECKING OAUTH CALLBACKS...');
-      const { data: callbacks, error: callbackError } = await supabase
-        .from('oauth_callbacks')
-        .select('*')
-        .eq('company_id', currentCompany.id)
-        .order('created_at', { ascending: false })
-        .limit(5);
-        
-      if (callbackError) {
-        console.error('Error fetching callbacks:', callbackError);
-      } else {
-        console.log(`Found ${callbacks?.length || 0} recent OAuth callbacks:`);
-        callbacks?.forEach((callback, index) => {
-          console.log(`Callback ${index + 1}:`, {
-            id: callback.id,
-            created_at: callback.created_at,
-            consumed: callback.consumed,
-            hasAuthCode: !!callback.auth_code,
-            error: callback.error,
-            expires_at: callback.expires_at
-          });
-        });
-      }
+      // Get recent errors from error logger
+      const recentErrors = errorLogger.getRecentErrors(50);
+      const errorStats = errorLogger.getErrorStats();
       
-      // 2. Check current integration tokens
-      console.log('\n2️⃣ CHECKING STORED TOKENS...');
-      const integration = await companyIntegrationsService.getIntegration(currentCompany.id, 'salesforce');
-      if (integration?.config) {
-        const config = integration.config as any;
-        const now = new Date();
-        const tokenExpiresAt = config.token_expires_at ? new Date(config.token_expires_at) : null;
-        const tokenReceivedAt = config.token_received_at ? new Date(config.token_received_at) : null;
-        
-        console.log('Integration status:', integration.status);
-        console.log('Last test at:', integration.last_test_at);
-        console.log('Has access token:', !!config.access_token);
-        console.log('Has refresh token:', !!config.refresh_token);
-        console.log('Token received at:', tokenReceivedAt?.toISOString());
-        console.log('Token expires at:', tokenExpiresAt?.toISOString());
-        console.log('Current time:', now.toISOString());
-        
-        if (tokenExpiresAt) {
-          const minutesRemaining = Math.round((tokenExpiresAt.getTime() - now.getTime()) / (1000 * 60));
-          console.log('Minutes until expiry:', minutesRemaining);
-          console.log('Is expired:', minutesRemaining <= 0);
+      console.log('📊 [ERROR_STATS]', {
+        total: errorStats.total,
+        unresolved: errorStats.unresolved,
+        byCategory: errorStats.byCategory,
+        bySeverity: errorStats.bySeverity
+      });
+      
+      console.log('🔍 [RECENT_ERRORS] Last 50 errors:');
+      recentErrors.forEach((error, index) => {
+        console.log(`${index + 1}. [${error.severity.toUpperCase()}] [${error.category}] ${error.error.name}`);
+        console.log(`   Message: ${error.error.message}`);
+        console.log(`   Time: ${new Date(error.timestamp).toLocaleString()}`);
+        if (error.context && Object.keys(error.context).length > 0) {
+          console.log(`   Context:`, error.context);
         }
-        
-        // Check if token was received recently
-        if (tokenReceivedAt) {
-          const minutesSinceReceived = Math.round((now.getTime() - tokenReceivedAt.getTime()) / (1000 * 60));
-          console.log('Minutes since token received:', minutesSinceReceived);
-          
-          if (minutesSinceReceived < 5) {
-            console.log('✅ TOKEN WAS RECEIVED RECENTLY - Authentication should be working!');
-          } else {
-            console.log('⚠️ Token is old - may need re-authentication');
-          }
-        }
-      }
+        console.log('');
+      });
       
-      // 3. Check OAuth state
-      console.log('\n3️⃣ CHECKING OAUTH STATE...');
-      const { data: oauthStates, error: stateError } = await supabase
-        .from('oauth_state')
-        .select('*')
-        .eq('company_id', currentCompany.id)
-        .eq('integration_type', 'salesforce');
-        
-      if (stateError) {
-        console.error('Error fetching oauth states:', stateError);
-      } else {
-        console.log(`Found ${oauthStates?.length || 0} oauth states`);
-        oauthStates?.forEach((state, index) => {
-          console.log(`State ${index + 1}:`, {
-            id: state.id,
-            created_at: state.created_at,
-            expires_at: state.expires_at,
-            hasCodeVerifier: !!state.code_verifier
-          });
-        });
-      }
+      // Also dump errors to alert
+      const errorSummary = recentErrors.slice(0, 10).map(e => 
+        `[${e.severity}] ${e.error.name}: ${e.error.message}`
+      ).join('\n\n');
       
-      // 4. Test current authentication
-      console.log('\n4️⃣ TESTING CURRENT AUTHENTICATION...');
-      try {
-        const { salesforceOAuthService } = await import('../services/salesforceOAuthService');
-        const connectionTest = await salesforceOAuthService.testConnection(currentCompany.id);
-        console.log('Connection test result:', connectionTest ? '✅ SUCCESS' : '❌ FAILED');
-        
-        if (connectionTest) {
-          Alert.alert('Authentication Working!', 'Your Salesforce authentication is actually working correctly!');
-        } else {
-          Alert.alert('Authentication Failed', 'Your Salesforce authentication is not working. Check the debug logs for details.');
-        }
-      } catch (testError) {
-        console.error('Connection test error:', testError);
-        Alert.alert('Test Error', `Connection test failed: ${(testError as Error).message}`);
-      }
-      
-      console.log('\n🎉 === OAUTH DEBUG COMPLETE ===');
+      Alert.alert(
+        'Recent Errors',
+        `Found ${recentErrors.length} recent errors. Check console for full details.\n\nLast 10 errors:\n\n${errorSummary}`,
+        [{ text: 'OK' }]
+      );
       
     } catch (error) {
-      console.error('[DebugScreen] OAuth debug error:', error);
-      Alert.alert('Debug Error', `Failed to debug OAuth: ${(error as Error).message}`);
+      console.error('Failed to dump errors:', error);
+      Alert.alert('Error', 'Failed to retrieve error logs');
     } finally {
       setIsLoading(false);
     }
@@ -948,6 +889,15 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
             style={styles.button}
           />
         </View>
+                  <View style={styles.buttonContainer}>
+            <CustomButton
+              title="Dump Recent Errors"
+              onPress={dumpRecentErrors}
+              disabled={isLoading}
+              variant="danger"
+              style={styles.button}
+            />
+          </View>
       </View>
     </SafeAreaView>
   );
