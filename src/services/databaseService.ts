@@ -11,17 +11,35 @@ let dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let dbQueue: (() => void)[] = []; // Queue for database operations
 let isInitializing = false;
 let initializationMutex = false; // Prevent multiple initialization attempts
+let connectionAttempts = 0; // Track connection attempts
+let lastConnectionAttempt = 0; // Track timing of connection attempts
+
+// Connection pool settings
+const MAX_CONNECTION_ATTEMPTS = 3;
+const CONNECTION_RETRY_DELAY = 2000; // 2 seconds between retries
+const MIN_TIME_BETWEEN_ATTEMPTS = 1000; // 1 second minimum between attempts
 
 // Opens the database with connection management and timeout protection
 export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   console.log('[DB_DEBUG] openDatabase: Called');
+
+  // Rate limiting: prevent too many rapid connection attempts
+  const now = Date.now();
+  if (now - lastConnectionAttempt < MIN_TIME_BETWEEN_ATTEMPTS) {
+    console.log('[DB_DEBUG] openDatabase: Rate limiting - waiting before next attempt');
+    await new Promise(resolve => setTimeout(resolve, MIN_TIME_BETWEEN_ATTEMPTS - (now - lastConnectionAttempt)));
+  }
+  lastConnectionAttempt = Date.now();
 
   // If we already have a database instance and not initializing, return it immediately
   if (globalDb && !isInitializing && !initializationMutex) {
     console.log('[DB_DEBUG] openDatabase: Using existing database instance');
     try {
       // Quick health check on existing connection
-      await globalDb.execAsync('SELECT 1');
+      await Promise.race([
+        globalDb.execAsync('SELECT 1'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Health check timeout')), 3000))
+      ]);
       return globalDb;
     } catch (error) {
       console.warn('[DB_DEBUG] openDatabase: Existing connection unhealthy, reconnecting');
@@ -39,6 +57,17 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       // If the existing operation failed, clear it and try again
       console.warn('[DB_DEBUG] openDatabase: Existing operation failed, retrying');
       dbOpenPromise = null;
+      connectionAttempts++;
+      
+      // Prevent infinite retry loops
+      if (connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
+        console.error('[DB_DEBUG] openDatabase: Max connection attempts exceeded');
+        connectionAttempts = 0; // Reset for future attempts
+        throw new Error('Database connection failed after maximum attempts');
+      }
+      
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, CONNECTION_RETRY_DELAY));
       return openDatabase();
     }
   }
@@ -65,18 +94,18 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   dbOpenPromise = Promise.race([
     (async () => {
       try {
-        console.log('[DB_DEBUG] openDatabase: Opening SQLite database file');
+        console.log('[DB_DEBUG] openDatabase: Creating new database connection');
         const db = await SQLite.openDatabaseAsync('LocalPhotoDatabase.db');
         console.log('[DB_DEBUG] openDatabase: SQLite database opened successfully');
 
-        // Set WAL mode for better concurrency
+        // Set essential PRAGMA settings quickly
         console.log('[DB_DEBUG] openDatabase: Setting WAL mode');
         await db.execAsync('PRAGMA journal_mode = WAL');
         console.log('[DB_DEBUG] openDatabase: WAL mode set successfully');
 
-        // Set shorter busy timeout to fail faster (20 seconds instead of 30)
+        // Set shorter busy timeout to fail faster (10 seconds instead of 20)
         console.log('[DB_DEBUG] openDatabase: Setting busy timeout');
-        await db.execAsync('PRAGMA busy_timeout = 20000');
+        await db.execAsync('PRAGMA busy_timeout = 10000');
         console.log('[DB_DEBUG] openDatabase: Busy timeout set successfully');
 
         // Enable connection sharing for better concurrency
@@ -85,7 +114,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         await db.execAsync('PRAGMA synchronous = NORMAL');
         console.log('[DB_DEBUG] openDatabase: Connection sharing configured');
 
-        // Run basic table setup (core tables only)
+        // Run minimal table setup (core tables only)
         console.log('[DB_DEBUG] openDatabase: Setting up core tables');
         await setupCoreTablesOnly(db);
         console.log('[DB_DEBUG] openDatabase: Core tables ready');
@@ -94,15 +123,22 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         isInitializing = false;
         initializationMutex = false;
         dbOpenPromise = null; // Clear the promise
+        connectionAttempts = 0; // Reset connection attempts on success
         console.log('[DB_DEBUG] openDatabase: Database ready for immediate use');
 
-        // Process any queued operations
+        // Process any queued operations with error handling
         console.log(`[DB_DEBUG] openDatabase: Processing ${dbQueue.length} queued operations`);
         const queuedOps = [...dbQueue];
         dbQueue = [];
-        queuedOps.forEach(op => op());
+        queuedOps.forEach(op => {
+          try {
+            op();
+          } catch (error) {
+            console.error('[DB_DEBUG] openDatabase: Error processing queued operation:', error);
+          }
+        });
 
-        // Start full initialization in background (non-blocking) with shorter delay
+        // Start full initialization in background (non-blocking) with longer delay
         console.log('[DB_DEBUG] openDatabase: Scheduling background initialization');
         setTimeout(() => {
           initializeFullDatabase(db).catch(error => {
@@ -117,7 +153,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
               }
             );
           });
-        }, 500); // Reduced to 500ms for faster background initialization
+        }, 2000); // Increased to 2 seconds to let main operations complete first
 
         return db;
       } catch (error) {
@@ -139,7 +175,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
     new Promise<never>((_, reject) =>
       setTimeout(() => {
         const timeoutError = new Error('Database open timeout - please try restarting the app');
-        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 15 seconds');
+        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 25 seconds');
         isInitializing = false;
         initializationMutex = false;
         dbOpenPromise = null; // Clear the promise on timeout
@@ -147,11 +183,11 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         // Log timeout errors
         errorLogger.logDatabaseError(timeoutError, 'openDatabase', {
           operation: 'database_timeout',
-          additionalData: { phase: 'timeout', timeoutDuration: 15000 }
+          additionalData: { phase: 'timeout', timeoutDuration: 25000 }
         });
 
         reject(timeoutError);
-      }, 15000) // Reduced to 15 seconds for faster failure
+      }, 25000) // Increased to 25 seconds to allow for slower devices
     )
   ]);
 
@@ -163,10 +199,16 @@ const setupCoreTablesOnly = async (database: SQLite.SQLiteDatabase): Promise<voi
   console.log('[DB_DEBUG] setupCoreTablesOnly: Setting up essential tables...');
 
   try {
-    // Run minimal migrations first
-    await DatabaseMigrationService.migrate(database);
+    // Skip heavy migrations during initial setup - do them in background
+    // Just ensure database version is tracked
+    await database.execAsync(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-    // Create only the essential tables
+    // Create only the essential tables quickly
     await database.execAsync(`
       -- Core photo batches table
       CREATE TABLE IF NOT EXISTS photo_batches (
@@ -217,6 +259,17 @@ const setupCoreTablesOnly = async (database: SQLite.SQLiteDatabase): Promise<voi
     console.log('[DB_DEBUG] setupCoreTablesOnly: Core tables created successfully');
   } catch (error) {
     console.error('[DB_DEBUG] setupCoreTablesOnly: Error setting up core tables:', error);
+    
+    // Log specific database error details
+    errorLogger.logDatabaseError(
+      error instanceof Error ? error : new Error('Core table setup failed'),
+      'setupCoreTablesOnly',
+      {
+        operation: 'database_table_creation',
+        additionalData: { phase: 'core_tables' }
+      }
+    );
+    
     throw error;
   }
 };
@@ -226,10 +279,15 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
   console.log('[DB_DEBUG] initializeFullDatabase: Starting background initialization...');
 
   try {
-    // Add a small delay to ensure primary operations complete first
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Add a longer delay to ensure primary operations complete first
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Run full migrations now
+    console.log('[DB_DEBUG] initializeFullDatabase: Running migrations...');
+    await DatabaseMigrationService.migrate(database);
 
     // Setup all remaining tables
+    console.log('[DB_DEBUG] initializeFullDatabase: Setting up additional tables...');
     await setupDatabaseTables(database);
 
     console.log('[DB_DEBUG] initializeFullDatabase: Full initialization completed successfully');
@@ -247,6 +305,13 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
     );
 
     // Don't throw - this is background initialization
+    // Retry after a delay
+    setTimeout(() => {
+      console.log('[DB_DEBUG] initializeFullDatabase: Retrying background initialization...');
+      initializeFullDatabase(database).catch(retryError => {
+        console.error('[DB_DEBUG] initializeFullDatabase: Retry also failed:', retryError);
+      });
+    }, 10000); // Retry after 10 seconds
   }
 };
 
@@ -1184,4 +1249,72 @@ export const getBatchMetadata = async (batchId: string | number): Promise<{
 
     return null;
   }
+};
+
+// Export utility functions
+export { DatabaseResetUtility };
+
+/**
+ * Force close and reset database connection - use only in emergency situations
+ */
+export const forceResetDatabase = async (): Promise<void> => {
+  console.warn('[DB_DEBUG] forceResetDatabase: Force resetting database connection');
+  
+  try {
+    // Close existing connection if it exists
+    if (globalDb) {
+      try {
+        await globalDb.closeAsync();
+      } catch (closeError) {
+        console.warn('[DB_DEBUG] forceResetDatabase: Error closing existing connection:', closeError);
+      }
+    }
+    
+    // Reset all state variables
+    globalDb = null;
+    dbOpenPromise = null;
+    dbQueue = [];
+    isInitializing = false;
+    initializationMutex = false;
+    connectionAttempts = 0;
+    lastConnectionAttempt = 0;
+    
+    console.log('[DB_DEBUG] forceResetDatabase: Database state reset successfully');
+  } catch (error) {
+    console.error('[DB_DEBUG] forceResetDatabase: Error during force reset:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get database connection status and health information
+ */
+export const getDatabaseStatus = async (): Promise<{
+  isConnected: boolean;
+  isHealthy: boolean;
+  connectionAttempts: number;
+  isInitializing: boolean;
+  queuedOperations: number;
+}> => {
+  let isHealthy = false;
+  
+  if (globalDb) {
+    try {
+      await Promise.race([
+        globalDb.execAsync('SELECT 1'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Health check timeout')), 2000))
+      ]);
+      isHealthy = true;
+    } catch (error) {
+      console.warn('[DB_DEBUG] getDatabaseStatus: Health check failed:', error);
+    }
+  }
+  
+  return {
+    isConnected: globalDb !== null,
+    isHealthy,
+    connectionAttempts,
+    isInitializing,
+    queuedOperations: dbQueue.length
+  };
 };
