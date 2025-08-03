@@ -161,7 +161,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           Promise.race([
             initializeFullDatabase(db),
             new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Background initialization timeout')), 30000) // 30 second timeout for background init
+              setTimeout(() => reject(new Error('Background initialization timeout')), 90000) // 90 second timeout for background init
             )
           ]).then(() => {
             console.log('[DB_DEBUG] Background initialization completed successfully');
@@ -314,7 +314,7 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
     await Promise.race([
       DatabaseMigrationService.migrate(database),
       new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Migration timeout')), 15000)
+        setTimeout(() => reject(new Error('Migration timeout')), 30000) // Increased to 30 seconds
       )
     ]);
 
@@ -323,7 +323,7 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
     await Promise.race([
       setupDatabaseTables(database),
       new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Table setup timeout')), 15000)
+        setTimeout(() => reject(new Error('Table setup timeout')), 45000) // Increased to 45 seconds
       )
     ]);
 
@@ -342,13 +342,17 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
     );
 
     // Don't throw - this is background initialization
-    // Retry after a delay
-    setTimeout(() => {
-      console.log('[DB_DEBUG] initializeFullDatabase: Retrying background initialization...');
-      initializeFullDatabase(database).catch(retryError => {
-        console.error('[DB_DEBUG] initializeFullDatabase: Retry also failed:', retryError);
-      });
-    }, 10000); // Retry after 10 seconds
+    // Only retry if it's not a timeout error (which indicates the operation is too heavy)
+    if (!error.message?.includes('timeout')) {
+      setTimeout(() => {
+        console.log('[DB_DEBUG] initializeFullDatabase: Retrying background initialization...');
+        initializeFullDatabase(database).catch(retryError => {
+          console.error('[DB_DEBUG] initializeFullDatabase: Retry also failed:', retryError);
+        });
+      }, 15000); // Retry after 15 seconds
+    } else {
+      console.warn('[DB_DEBUG] initializeFullDatabase: Skipping retry due to timeout - background init will continue on next app restart');
+    }
   }
 };
 
