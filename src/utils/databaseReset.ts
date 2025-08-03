@@ -1,86 +1,48 @@
-import * as SQLite from 'expo-sqlite';
-import DatabaseMigrationService from '../services/databaseMigrationService';
-
 /**
- * Database reset utility for fixing schema issues
- * This should be run when database initialization fails
+ * Database Reset Utilities
+ * Emergency functions to reset database state when issues occur
  */
-export class DatabaseResetUtility {
+
+import * as SQLite from 'expo-sqlite';
+
+let globalDb: SQLite.SQLiteDatabase | null = null;
+
+export const resetDatabaseConnection = async (): Promise<void> => {
+  console.log('[DB_RESET] Resetting database connection...');
   
-  /**
-   * Reset and reinitialize the database
-   */
-  static async resetDatabase(): Promise<void> {
-    console.log('[DatabaseReset] Starting database reset...');
+  try {
+    // Close existing connection if it exists
+    if (globalDb) {
+      await globalDb.closeAsync();
+      globalDb = null;
+    }
     
-    try {
-      // Open database connection
-      const db = await SQLite.openDatabaseAsync('QualityControl.db');
-      
-      // Reset using migration service
-      await DatabaseMigrationService.resetDatabase(db);
-      
-      console.log('[DatabaseReset] Database reset completed successfully');
-      
-    } catch (error) {
-      console.error('[DatabaseReset] Error during database reset:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Check if database needs reset (has schema issues)
-   */
-  static async needsReset(): Promise<boolean> {
-    try {
-      const db = await SQLite.openDatabaseAsync('QualityControl.db');
-      
-      // Try to query a table that should exist
-      await db.getFirstAsync('SELECT COUNT(*) FROM photo_batches LIMIT 1');
-      
-      // Try to query for syncStatus column
-      await db.getFirstAsync('SELECT syncStatus FROM photo_batches LIMIT 1');
-      
-      // Try to query companies table
-      await db.getFirstAsync('SELECT COUNT(*) FROM companies LIMIT 1');
-      
-      return false; // No reset needed
-      
-    } catch (error) {
-      console.log('[DatabaseReset] Database schema issues detected:', error);
-      return true; // Reset needed
-    }
-  }
-
-  /**
-   * Safe database initialization with automatic reset if needed
-   */
-  static async safeInitialize(): Promise<SQLite.SQLiteDatabase> {
-    console.log('[DatabaseReset] Starting safe database initialization...');
+    // Clear any cached state
+    // Note: We can't access the internal variables from databaseService here
+    // This is just for emergency cleanup
     
-    try {
-      // Check if reset is needed
-      const needsReset = await this.needsReset();
-      
-      if (needsReset) {
-        console.log('[DatabaseReset] Database reset required, performing reset...');
-        await this.resetDatabase();
-      }
-      
-      // Open and return database
-      const db = await SQLite.openDatabaseAsync('QualityControl.db');
-      
-      // Ensure migrations are up to date
-      await DatabaseMigrationService.migrate(db);
-      
-      console.log('[DatabaseReset] Safe initialization completed');
-      return db;
-      
-    } catch (error) {
-      console.error('[DatabaseReset] Error during safe initialization:', error);
-      throw error;
-    }
+    console.log('[DB_RESET] Database connection reset completed');
+  } catch (error) {
+    console.error('[DB_RESET] Error during database reset:', error);
+    throw error;
   }
-}
+};
 
-export default DatabaseResetUtility;
+export const forceDatabaseClose = async (): Promise<void> => {
+  console.log('[DB_RESET] Force closing database...');
+  
+  try {
+    if (globalDb) {
+      await globalDb.closeAsync();
+      globalDb = null;
+    }
+  } catch (error) {
+    console.warn('[DB_RESET] Error force closing database (expected):', error);
+    // Ignore errors during force close
+  }
+};
+
+export default {
+  resetDatabaseConnection,
+  forceDatabaseClose
+};

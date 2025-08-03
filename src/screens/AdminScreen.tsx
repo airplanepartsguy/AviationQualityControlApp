@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../styles/theme';
 import adminService, { UserLicenseInfo, DeviceInfo, AdminStats } from '../services/adminService';
 
 /**
@@ -182,7 +183,7 @@ const AdminScreen: React.FC = () => {
           style={[styles.actionButton, styles.suspendButton]}
           onPress={() => handleSuspendUser(item.userId)}
         >
-          <Ionicons name="ban" size={16} color="#fff" />
+          <Ionicons name="ban" size={16} color={COLORS.white} />
           <Text style={styles.actionButtonText}>Suspend</Text>
         </TouchableOpacity>
       </View>
@@ -193,7 +194,7 @@ const AdminScreen: React.FC = () => {
     <View style={styles.itemCard}>
       <View style={styles.itemHeader}>
         <Text style={styles.itemTitle}>{item.deviceName}</Text>
-        <View style={[styles.statusBadge, { backgroundColor: item.isActive ? '#4CAF50' : '#757575' }]}>
+        <View style={[styles.statusBadge, { backgroundColor: item.isActive ? COLORS.success : COLORS.grey600 }]}>
           <Text style={styles.statusText}>{item.isActive ? 'ACTIVE' : 'INACTIVE'}</Text>
         </View>
       </View>
@@ -211,7 +212,7 @@ const AdminScreen: React.FC = () => {
           style={[styles.actionButton, styles.revokeButton]}
           onPress={() => handleRevokeDevice(item.id)}
         >
-          <Ionicons name="close-circle" size={16} color="#fff" />
+          <Ionicons name="close-circle" size={16} color={COLORS.white} />
           <Text style={styles.actionButtonText}>Revoke</Text>
         </TouchableOpacity>
       </View>
@@ -220,11 +221,11 @@ const AdminScreen: React.FC = () => {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'active': return '#4CAF50';
-      case 'expired': return '#FF9800';
-      case 'suspended': return '#F44336';
-      case 'cancelled': return '#757575';
-      default: return '#757575';
+      case 'active': return COLORS.success;
+      case 'expired': return COLORS.warning;
+      case 'suspended': return COLORS.error;
+      case 'cancelled': return COLORS.grey600;
+      default: return COLORS.grey600;
     }
   };
 
@@ -239,7 +240,7 @@ const AdminScreen: React.FC = () => {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
             ListEmptyComponent={
               <View style={styles.emptyState}>
-                <Ionicons name="people-outline" size={64} color="#ccc" />
+                <Ionicons name="people-outline" size={64} color={COLORS.grey400} />
                 <Text style={styles.emptyText}>No users found</Text>
                 <Text style={styles.emptySubtext}>Create your first user to get started</Text>
               </View>
@@ -256,7 +257,7 @@ const AdminScreen: React.FC = () => {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
             ListEmptyComponent={
               <View style={styles.emptyState}>
-                <Ionicons name="phone-portrait-outline" size={64} color="#ccc" />
+                <Ionicons name="phone-portrait-outline" size={64} color={COLORS.grey400} />
                 <Text style={styles.emptyText}>No devices found</Text>
                 <Text style={styles.emptySubtext}>Device registrations will appear here</Text>
               </View>
@@ -301,7 +302,7 @@ const AdminScreen: React.FC = () => {
           style={styles.addButton}
           onPress={() => setShowCreateUser(true)}
         >
-          <Ionicons name="add" size={24} color="#fff" />
+          <Ionicons name="add" size={24} color={COLORS.white} />
         </TouchableOpacity>
       </View>
 
@@ -311,7 +312,7 @@ const AdminScreen: React.FC = () => {
           style={[styles.tab, selectedTab === 'users' && styles.activeTab]}
           onPress={() => setSelectedTab('users')}
         >
-          <Ionicons name="people" size={20} color={selectedTab === 'users' ? '#007AFF' : '#666'} />
+          <Ionicons name="people" size={20} color={selectedTab === 'users' ? COLORS.primary : COLORS.grey700} />
           <Text style={[styles.tabText, selectedTab === 'users' && styles.activeTabText]}>Users</Text>
         </TouchableOpacity>
         
@@ -319,7 +320,7 @@ const AdminScreen: React.FC = () => {
           style={[styles.tab, selectedTab === 'devices' && styles.activeTab]}
           onPress={() => setSelectedTab('devices')}
         >
-          <Ionicons name="phone-portrait" size={20} color={selectedTab === 'devices' ? '#007AFF' : '#666'} />
+          <Ionicons name="phone-portrait" size={20} color={selectedTab === 'devices' ? COLORS.primary : COLORS.grey700} />
           <Text style={[styles.tabText, selectedTab === 'devices' && styles.activeTabText]}>Devices</Text>
         </TouchableOpacity>
         
@@ -327,7 +328,7 @@ const AdminScreen: React.FC = () => {
           style={[styles.tab, selectedTab === 'licenses' && styles.activeTab]}
           onPress={() => setSelectedTab('licenses')}
         >
-          <Ionicons name="key" size={20} color={selectedTab === 'licenses' ? '#007AFF' : '#666'} />
+          <Ionicons name="key" size={20} color={selectedTab === 'licenses' ? COLORS.primary : COLORS.grey700} />
           <Text style={[styles.tabText, selectedTab === 'licenses' && styles.activeTabText]}>Licenses</Text>
         </TouchableOpacity>
       </View>
@@ -415,7 +416,7 @@ const AdminScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5'
+    backgroundColor: COLORS.backgroundSecondary
   },
   header: {
     flexDirection: 'row',
@@ -589,7 +590,7 @@ const styles = StyleSheet.create({
   },
   modalContainer: {
     flex: 1,
-    backgroundColor: '#f5f5f5'
+    backgroundColor: COLORS.backgroundSecondary
   },
   modalHeader: {
     flexDirection: 'row',

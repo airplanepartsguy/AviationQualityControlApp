@@ -5,6 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { AuthStackParamList } from '../../App'; // Adjust path if App.tsx is elsewhere or AuthStackParamList is defined differently
+import { COLORS } from '../styles/theme';
 
 type SignUpScreenNavigationProp = NativeStackNavigationProp<AuthStackParamList, 'SignUp'>;
 
@@ -101,7 +102,7 @@ const SignUpScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5', // Light grey background for a professional feel
+    backgroundColor: COLORS.backgroundSecondary,
   },
   scrollContainer: {
     flexGrow: 1,
@@ -117,13 +118,13 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: '#666',
+    color: COLORS.textSecondary,
     textAlign: 'center',
     marginBottom: 30,
   },
   input: {
     marginBottom: 15,
-    backgroundColor: '#fff', // White background for inputs
+    backgroundColor: COLORS.white,
   },
   button: {
     marginTop: 10,

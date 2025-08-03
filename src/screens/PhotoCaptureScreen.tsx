@@ -192,11 +192,11 @@ const styles = StyleSheet.create({
     width: SCAN_FRAME_SIZE,
     height: SCAN_FRAME_SIZE,
     borderWidth: 3,
-    borderColor: 'rgba(255, 215, 0, 0.8)', // More visible gold/yellow color
+    borderColor: COLORS.cameraAccentRgba,
     borderRadius: BORDER_RADIUS.small,
     overflow: 'hidden',
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    shadowColor: '#FFD700',
+    shadowColor: COLORS.cameraAccent,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 12,
@@ -205,9 +205,9 @@ const styles = StyleSheet.create({
   scanLine: {
     height: 3,
     width: '100%',
-    backgroundColor: '#FFD700', // Matching gold color for better visibility
+    backgroundColor: COLORS.cameraAccent,
     position: 'absolute',
-    shadowColor: '#FFD700',
+    shadowColor: COLORS.cameraAccent,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.9,
     shadowRadius: 6,
@@ -235,13 +235,13 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(255, 215, 0, 0.5)', // Subtle gold border for consistency
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
   },
   picker: {
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     height: 56, // Match updated container height
     width: '100%', // Take full width of its container
     fontWeight: '500',
@@ -291,7 +291,7 @@ const styles = StyleSheet.create({
   scanText: {
     fontSize: FONTS.regular,
     fontWeight: '600',
-    color: '#FFD700', // Gold color to match scan frame
+    color: COLORS.cameraAccent,
     marginTop: SPACING.medium,
     textAlign: 'center',
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -327,7 +327,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(255, 215, 0, 0.4)', // Subtle gold border for consistency
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
@@ -346,17 +346,17 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, // Increased border width for better visibility
     borderColor: 'rgba(255, 215, 0, 0.4)', // Subtle gold border for consistency
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
   },
   iconButtonActive: {
-    backgroundColor: 'rgba(255, 215, 0, 0.7)', // Gold color to match other accent elements
-    borderColor: '#FFFFFF', // White border for active state
+    backgroundColor: COLORS.cameraActiveRgba,
+    borderColor: COLORS.cameraWhite,
     borderWidth: 2, // Thicker border for better visibility in active state
     elevation: 6, // Increased elevation for better visual feedback
-    shadowColor: 'rgba(255, 215, 0, 0.9)',
+    shadowColor: COLORS.cameraAccent,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.6,
     shadowRadius: 5,
@@ -395,10 +395,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 4, // Thicker border for better visibility
-    borderColor: '#FFFFFF', // Pure white for maximum contrast
+    borderColor: COLORS.cameraWhite,
     alignSelf: 'center',
     elevation: 8, // Increased elevation for more prominence
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.6,
     shadowRadius: 5,
@@ -408,8 +408,8 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#FFFFFF', // Pure white for maximum contrast
-    shadowColor: '#000',
+    backgroundColor: COLORS.cameraWhite,
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.4,
     shadowRadius: 2,
@@ -429,7 +429,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, // Thicker border for better visibility
     borderColor: 'rgba(255, 215, 0, 0.5)', // Subtle gold border for consistency
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
@@ -453,7 +453,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.medium,
     borderRadius: BORDER_RADIUS.small,
     elevation: 5, // Increased elevation for better visibility
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
@@ -468,7 +468,7 @@ const styles = StyleSheet.create({
   defectButtonText: {
     fontSize: FONTS.small,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     letterSpacing: 0.5,
     textAlign: 'center',
     textShadowColor: 'rgba(0,0,0,0.5)',
@@ -503,7 +503,7 @@ const styles = StyleSheet.create({
   manualInputTitle: {
     fontSize: FONTS.regular,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     letterSpacing: 0.5,
     textShadowColor: 'rgba(0,0,0,0.75)',
     textShadowOffset: {width: 1, height: 1},
@@ -519,7 +519,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.3)',
     elevation: 3,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 2,
@@ -534,7 +534,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(255, 215, 0, 0.5)', // Subtle gold border for consistency with scan frame
     elevation: 5,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.4,
     shadowRadius: 4,
@@ -543,7 +543,7 @@ const styles = StyleSheet.create({
   manualInput: {
     flex: 1,
     height: 56, // Match container height
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     paddingHorizontal: SPACING.medium,
     fontSize: FONTS.regular,
     fontWeight: '500', // Slightly bolder for better readability
@@ -558,7 +558,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 1.5,
     borderLeftColor: 'rgba(255, 215, 0, 0.5)', // Match container border
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: -1, height: 0 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
@@ -585,7 +585,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(255, 215, 0, 0.5)', // Subtle gold border for consistency
     elevation: 5,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.4,
     shadowRadius: 4,
@@ -593,7 +593,7 @@ const styles = StyleSheet.create({
   batchInfoText: {
     fontSize: FONTS.medium, // Slightly larger font for better readability
     fontWeight: '600', // Using string value instead of FONTS.semiBold
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     letterSpacing: 0.5, // Increased for better clarity in industrial settings
     textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: {width: 0.5, height: 0.5},
@@ -622,7 +622,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, // Thicker border for better visibility
     borderColor: 'rgba(255, 215, 0, 0.5)', // Matching gold border theme
     elevation: 5, // Increased elevation for better visibility
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.5,
     shadowRadius: 4,
@@ -636,7 +636,7 @@ const styles = StyleSheet.create({
   finishButtonText: {
     fontSize: FONTS.small,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     letterSpacing: 0.5,
     textAlign: 'center',
     textShadowColor: 'rgba(0,0,0,0.5)',
@@ -750,13 +750,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 215, 0, 0.4)', // Subtle gold border for consistency
     zIndex: 3,
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
     shadowRadius: 5,
   },
   photoClassificationLabel: {
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     fontSize: FONTS.small,
     fontWeight: '600',
     marginRight: SPACING.medium,
@@ -783,13 +783,13 @@ const styles = StyleSheet.create({
     maxWidth: 240, // Slightly wider for better usability
     height: 48, // Consistent height for better touchability
     elevation: 4,
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
   },
   photoClassificationText: {
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     fontSize: FONTS.small,
     fontWeight: '600',
     letterSpacing: 0.5,
@@ -799,7 +799,7 @@ const styles = StyleSheet.create({
   },
   photoClassificationPicker: {
     width: '100%',
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     backgroundColor: 'transparent',
     height: 48, // Match container height
     fontWeight: '500',
@@ -812,7 +812,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, // Thicker border for better visibility
     borderColor: 'rgba(255, 215, 0, 0.5)', // Matching gold border theme
     elevation: 4, // Added elevation for better visibility
-    shadowColor: '#000',
+    shadowColor: COLORS.cameraShadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 3,
@@ -820,7 +820,7 @@ const styles = StyleSheet.create({
     marginHorizontal: SPACING.tiny,
   },
   zoomDisplayText: {
-    color: '#FFFFFF',
+    color: COLORS.cameraWhite,
     fontSize: FONTS.small,
     fontWeight: '600', // Using string value for better readability
     letterSpacing: 0.5, // Better character spacing for industrial displays
@@ -1228,8 +1228,8 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
         userId,
         companyId: currentCompany?.id,
         operation: 'handleScannedIdSubmit',
-        scannedId: cleanId,
         additionalData: { 
+          scannedId: cleanId,
           cleanId,
           originalId: scannedId,
           isLoading,
@@ -1458,7 +1458,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
               uri: photoDataToSave.uri,
               metadata: photoDataToSave.metadata,
               annotations: [],
-              localPath: photoDataToSave.uri,
+
               uploadStatus: 'pending',
               cloudUrl: null
             });
@@ -1486,7 +1486,7 @@ const PhotoCaptureScreen: React.FC<PhotoCaptureScreenProps> = ({ route }) => {
             const queueErrorId = logError(queueError, {
               userId,
               companyId: currentCompany?.id,
-              batchId: currentBatch.id,
+              batchId: currentBatch.id.toString(),
               photoId: newPhotoId,
               operation: 'processAndSavePhoto_sync_queue',
               additionalData: {

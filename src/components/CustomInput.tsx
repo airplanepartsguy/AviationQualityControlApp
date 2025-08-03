@@ -9,6 +9,7 @@ import {
   TextStyle,
   StyleProp,
 } from 'react-native';
+import { COLORS } from '../styles/theme';
 
 interface CustomInputProps extends TextInputProps {
   label?: string;
@@ -43,7 +44,7 @@ const CustomInput = forwardRef<TextInput, CustomInputProps>(
             inputStyle,
             error ? styles.inputError : null, // Apply error style if error exists
           ]}
-          placeholderTextColor="#A0A0A0" // Default placeholder color
+          placeholderTextColor={COLORS.grey500}
           {...rest}
         />
         {error && <Text style={[styles.errorText, errorStyle]}>{error}</Text>}

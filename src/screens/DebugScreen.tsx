@@ -906,31 +906,31 @@ const DebugScreen: React.FC<DebugScreenProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: COLORS?.background || '#F5F5F5',
+    backgroundColor: COLORS.background,
   },
   container: {
     flex: 1,
-    padding: SPACING?.medium || 15,
+    padding: SPACING.medium,
   },
   title: {
-    fontSize: FONTS?.large || 22, 
+    fontSize: FONTS.large, 
     fontWeight: 'bold',
-    color: COLORS?.primary || '#007AFF', 
-    marginBottom: SPACING?.medium || 15,
+    color: COLORS.primary, 
+    marginBottom: SPACING.medium,
     textAlign: 'center',
   },
   logContainer: {
     flex: 1,
-    backgroundColor: COLORS?.grey100 || '#EEEEEE',
+    backgroundColor: COLORS.grey100,
     borderWidth: 1,
-    borderColor: COLORS?.grey300 || '#CCCCCC',
-    borderRadius: BORDER_RADIUS?.small || 5,
-    padding: SPACING?.medium || 10,
-    marginBottom: SPACING?.medium || 15,
+    borderColor: COLORS.grey300,
+    borderRadius: BORDER_RADIUS.small,
+    padding: SPACING.medium,
+    marginBottom: SPACING.medium,
   },
   logText: {
-    fontSize: FONTS?.small || 12,
-    color: COLORS?.black || '#333333', 
+    fontSize: FONTS.small,
+    color: COLORS.text, 
     fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', 
   },
   buttonContainer: {

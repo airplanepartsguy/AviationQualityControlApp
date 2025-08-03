@@ -19,25 +19,48 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   // If we already have a database instance and not initializing, return it immediately
   if (globalDb && !isInitializing && !initializationMutex) {
     console.log('[DB_DEBUG] openDatabase: Using existing database instance');
-    return globalDb;
+    try {
+      // Quick health check on existing connection
+      await globalDb.execAsync('SELECT 1');
+      return globalDb;
+    } catch (error) {
+      console.warn('[DB_DEBUG] openDatabase: Existing connection unhealthy, reconnecting');
+      globalDb = null;
+      // Continue to create new connection
+    }
   }
 
   // If there's already a pending open operation, wait for it
   if (dbOpenPromise) {
     console.log('[DB_DEBUG] openDatabase: Waiting for existing open operation');
-    return dbOpenPromise;
+    try {
+      return await dbOpenPromise;
+    } catch (error) {
+      // If the existing operation failed, clear it and try again
+      console.warn('[DB_DEBUG] openDatabase: Existing operation failed, retrying');
+      dbOpenPromise = null;
+      return openDatabase();
+    }
   }
 
-  // If initialization mutex is set, wait briefly and retry
+  // If initialization mutex is set, wait briefly and retry (with timeout)
   if (initializationMutex) {
     console.log('[DB_DEBUG] openDatabase: Initialization mutex active, waiting...');
-    await new Promise(resolve => setTimeout(resolve, 100));
+    let retryCount = 0;
+    while (initializationMutex && retryCount < 50) { // 5 second max wait
+      await new Promise(resolve => setTimeout(resolve, 100));
+      retryCount++;
+    }
+    if (initializationMutex) {
+      console.warn('[DB_DEBUG] openDatabase: Mutex timeout, forcing reset');
+      initializationMutex = false;
+      isInitializing = false;
+    }
     return openDatabase(); // Retry
   }
 
   console.log('[DB_DEBUG] openDatabase: Creating new database connection');
   initializationMutex = true;
-  isInitializing = true;
 
   dbOpenPromise = Promise.race([
     (async () => {
@@ -94,7 +117,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
               }
             );
           });
-        }, 1000); // Reduced from 2 seconds to 1 second
+        }, 500); // Reduced to 500ms for faster background initialization
 
         return db;
       } catch (error) {
@@ -116,7 +139,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
     new Promise<never>((_, reject) =>
       setTimeout(() => {
         const timeoutError = new Error('Database open timeout - please try restarting the app');
-        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 30 seconds');
+        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 15 seconds');
         isInitializing = false;
         initializationMutex = false;
         dbOpenPromise = null; // Clear the promise on timeout
@@ -124,11 +147,11 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         // Log timeout errors
         errorLogger.logDatabaseError(timeoutError, 'openDatabase', {
           operation: 'database_timeout',
-          additionalData: { phase: 'timeout', timeoutDuration: 30000 }
+          additionalData: { phase: 'timeout', timeoutDuration: 15000 }
         });
 
         reject(timeoutError);
-      }, 30000) // Reduced from 45 to 30 seconds for faster failure
+      }, 15000) // Reduced to 15 seconds for faster failure
     )
   ]);
 

@@ -63,12 +63,23 @@ export const COLORS = {
   captureButton: '#1A73E8',
   defectButton: '#EA4335',
   defectHighlight: 'rgba(234, 67, 53, 0.2)',
+  cameraAccent: '#FFD700',          // Gold for scan frames, active states
+  cameraAccentRgba: 'rgba(255, 215, 0, 0.8)',  // Semi-transparent gold
+  cameraActiveRgba: 'rgba(255, 215, 0, 0.7)',  // Active state gold
+  cameraWhite: '#FFFFFF',           // Pure white for camera UI
+  cameraShadow: '#000000',          // Black shadows
   
   // Batch Status Colors
   batchComplete: '#34A853',
   batchInProgress: '#F9AB00',
   batchError: '#EA4335',
   batchPending: '#80868B',
+  
+  // Defect Severity Colors
+  defectMinor: '#F9AB00',     // Yellow
+  defectModerate: '#FF6D01',  // Orange 
+  defectCritical: '#EA4335',  // Red
+  defectNone: '#80868B',      // Grey
 };
 
 export const FONTS = {
@@ -86,6 +97,7 @@ export const FONTS = {
   light: '300' as const,
   normal: '400' as const,
   mediumWeight: '500' as const,
+  semiBold: '500' as const, // Alias for compatibility
   bold: '600' as const,
   black: '700' as const,
   
@@ -99,8 +111,14 @@ export const FONTS = {
 };
 
 export const SPACING = {
-  // Base spacing unit (4px)
+  // Base spacing unit (4px)  
   unit: 4,
+  
+  // Legacy naming for compatibility
+  tiny: 4,
+  small: 8,
+  medium: 16,
+  large: 24,
   
   // Common spacing values
   xs: 4,
@@ -124,6 +142,12 @@ export const SPACING = {
 
 export const BORDER_RADIUS = {
   none: 0,
+  
+  // Legacy naming for compatibility
+  small: 4,
+  medium: 8,
+  
+  // Common radius values
   xs: 2,
   sm: 4,
   md: 8,

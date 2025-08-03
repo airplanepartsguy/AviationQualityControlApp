@@ -303,6 +303,9 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
     );
   }
 
+  // Error boundary for component rendering issues
+  try {
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.primary} />
@@ -454,6 +457,21 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       </ScrollView>
     </SafeAreaView>
   );
+  } catch (componentError) {
+    console.error('[BatchPreview] Component rendering error:', componentError);
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Error loading batch preview</Text>
+          <CustomButton 
+            title="Go Back" 
+            onPress={() => navigation.goBack()} 
+            variant="primary"
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
 };
 
 const styles = StyleSheet.create({

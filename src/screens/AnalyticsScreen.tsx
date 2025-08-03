@@ -209,21 +209,21 @@ const AnalyticsScreen: React.FC<AnalyticsTabScreenProps> = ({ navigation }) => {
             {
               name: 'Critical',
               population: analyticsData.defectStats.critical,
-              color: '#F44336',
+              color: COLORS.defectCritical,
               legendFontColor: COLORS.text,
               legendFontSize: 12
             },
             {
               name: 'Moderate',
               population: analyticsData.defectStats.moderate,
-              color: '#FF9800',
+              color: COLORS.defectModerate,
               legendFontColor: COLORS.text,
               legendFontSize: 12
             },
             {
               name: 'Minor',
               population: analyticsData.defectStats.minor,
-              color: '#FFEB3B',
+              color: COLORS.defectMinor,
               legendFontColor: COLORS.text,
               legendFontSize: 12
             }

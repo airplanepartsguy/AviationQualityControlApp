@@ -37,10 +37,10 @@ const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 // Color mapping for defect severity
 const DEFECT_SEVERITY_COLORS = {
-  'Minor': '#FFEB3B',    // Yellow
-  'Moderate': '#FF9800', // Orange
-  'Critical': '#F44336', // Red
-  'None': '#9E9E9E',     // Grey
+  'Minor': COLORS.defectMinor,
+  'Moderate': COLORS.defectModerate,
+  'Critical': COLORS.defectCritical,
+  'None': COLORS.defectNone,
 };
 
 // Drawing tool types
