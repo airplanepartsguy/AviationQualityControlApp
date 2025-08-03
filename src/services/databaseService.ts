@@ -13,21 +13,34 @@ let isInitializing = false;
 let initializationMutex = false; // Prevent multiple initialization attempts
 let connectionAttempts = 0; // Track connection attempts
 let lastConnectionAttempt = 0; // Track timing of connection attempts
+let isBackgroundInitializing = false; // Track background initialization status
+let backgroundInitStartTime = 0; // Track when background init started
 
 // Connection pool settings
 const MAX_CONNECTION_ATTEMPTS = 3;
 const CONNECTION_RETRY_DELAY = 2000; // 2 seconds between retries
-const MIN_TIME_BETWEEN_ATTEMPTS = 1000; // 1 second minimum between attempts
+const MIN_TIME_BETWEEN_ATTEMPTS = 100; // Reduced to 100ms for better responsiveness
+const STARTUP_OPERATION_DELAY = 50; // Very short delay for startup operations
+const BACKGROUND_INIT_GRACE_PERIOD = 5000; // 5 seconds grace period for background init
 
 // Opens the database with connection management and timeout protection
 export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   console.log('[DB_DEBUG] openDatabase: Called');
 
-  // Rate limiting: prevent too many rapid connection attempts
+  // Smart rate limiting: be more aggressive during background initialization
   const now = Date.now();
-  if (now - lastConnectionAttempt < MIN_TIME_BETWEEN_ATTEMPTS) {
-    console.log('[DB_DEBUG] openDatabase: Rate limiting - waiting before next attempt');
-    await new Promise(resolve => setTimeout(resolve, MIN_TIME_BETWEEN_ATTEMPTS - (now - lastConnectionAttempt)));
+  const timeSinceLastAttempt = now - lastConnectionAttempt;
+  
+  // If background initialization is running, be more conservative
+  let effectiveMinTime = MIN_TIME_BETWEEN_ATTEMPTS;
+  if (isBackgroundInitializing && (now - backgroundInitStartTime) < BACKGROUND_INIT_GRACE_PERIOD) {
+    effectiveMinTime = MIN_TIME_BETWEEN_ATTEMPTS * 2; // Double the wait time during background init
+  }
+  
+  if (timeSinceLastAttempt < effectiveMinTime) {
+    const waitTime = effectiveMinTime - timeSinceLastAttempt;
+    console.log(`[DB_DEBUG] openDatabase: Rate limiting - waiting ${waitTime}ms before next attempt (background init: ${isBackgroundInitializing})`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
   }
   lastConnectionAttempt = Date.now();
 
@@ -138,22 +151,36 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           }
         });
 
-        // Start full initialization in background (non-blocking) with longer delay
+        // Start full initialization in background (non-blocking) with optimized delay
         console.log('[DB_DEBUG] openDatabase: Scheduling background initialization');
         setTimeout(() => {
-          initializeFullDatabase(db).catch(error => {
+          isBackgroundInitializing = true;
+          backgroundInitStartTime = Date.now();
+          
+          // Add timeout protection to background initialization
+          Promise.race([
+            initializeFullDatabase(db),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Background initialization timeout')), 30000) // 30 second timeout for background init
+            )
+          ]).then(() => {
+            console.log('[DB_DEBUG] Background initialization completed successfully');
+            isBackgroundInitializing = false;
+          }).catch(error => {
             console.error('[DB_DEBUG] Background initialization failed:', error);
+            isBackgroundInitializing = false;
+            
             // Don't fail the main database connection for background initialization failures
             errorLogger.logDatabaseError(
               error instanceof Error ? error : new Error('Background initialization failed'),
               'initializeFullDatabase',
               {
                 operation: 'background_initialization',
-                additionalData: { phase: 'full_initialization' }
+                additionalData: { phase: 'full_initialization', error: error.message }
               }
             );
           });
-        }, 2000); // Increased to 2 seconds to let main operations complete first
+        }, 1000); // Reduced to 1 second but with timeout protection
 
         return db;
       } catch (error) {
@@ -175,7 +202,7 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
     new Promise<never>((_, reject) =>
       setTimeout(() => {
         const timeoutError = new Error('Database open timeout - please try restarting the app');
-        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 25 seconds');
+        console.error('[DB_DEBUG] openDatabase: Database open operation timed out after 30 seconds');
         isInitializing = false;
         initializationMutex = false;
         dbOpenPromise = null; // Clear the promise on timeout
@@ -183,11 +210,11 @@ export const openDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         // Log timeout errors
         errorLogger.logDatabaseError(timeoutError, 'openDatabase', {
           operation: 'database_timeout',
-          additionalData: { phase: 'timeout', timeoutDuration: 25000 }
+          additionalData: { phase: 'timeout', timeoutDuration: 30000 }
         });
 
         reject(timeoutError);
-      }, 25000) // Increased to 25 seconds to allow for slower devices
+      }, 30000) // Increased to 30 seconds for very slow devices, but with better background handling
     )
   ]);
 
@@ -279,16 +306,26 @@ const initializeFullDatabase = async (database: SQLite.SQLiteDatabase): Promise<
   console.log('[DB_DEBUG] initializeFullDatabase: Starting background initialization...');
 
   try {
-    // Add a longer delay to ensure primary operations complete first
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Shorter delay but with better error handling
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
-    // Run full migrations now
+    // Run full migrations now with timeout protection
     console.log('[DB_DEBUG] initializeFullDatabase: Running migrations...');
-    await DatabaseMigrationService.migrate(database);
+    await Promise.race([
+      DatabaseMigrationService.migrate(database),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Migration timeout')), 15000)
+      )
+    ]);
 
-    // Setup all remaining tables
+    // Setup all remaining tables with timeout protection
     console.log('[DB_DEBUG] initializeFullDatabase: Setting up additional tables...');
-    await setupDatabaseTables(database);
+    await Promise.race([
+      setupDatabaseTables(database),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Table setup timeout')), 15000)
+      )
+    ]);
 
     console.log('[DB_DEBUG] initializeFullDatabase: Full initialization completed successfully');
   } catch (error) {
@@ -1294,7 +1331,9 @@ export const getDatabaseStatus = async (): Promise<{
   isHealthy: boolean;
   connectionAttempts: number;
   isInitializing: boolean;
+  isBackgroundInitializing: boolean;
   queuedOperations: number;
+  backgroundInitRuntime?: number;
 }> => {
   let isHealthy = false;
   
@@ -1310,11 +1349,19 @@ export const getDatabaseStatus = async (): Promise<{
     }
   }
   
-  return {
+  const result: any = {
     isConnected: globalDb !== null,
     isHealthy,
     connectionAttempts,
     isInitializing,
+    isBackgroundInitializing,
     queuedOperations: dbQueue.length
   };
+  
+  // Add background init runtime if currently running
+  if (isBackgroundInitializing && backgroundInitStartTime > 0) {
+    result.backgroundInitRuntime = Date.now() - backgroundInitStartTime;
+  }
+  
+  return result;
 };
