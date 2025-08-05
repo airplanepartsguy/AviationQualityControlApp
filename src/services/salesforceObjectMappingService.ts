@@ -20,6 +20,10 @@ export interface ParsedDocumentId {
 }
 
 class SalesforceObjectMappingService {
+  // In-memory cache for mappings to improve performance
+  private mappingCache: Map<string, ObjectMapping[]> = new Map();
+  private cacheExpiryTime = 5 * 60 * 1000; // 5 minutes
+  private cacheTimestamps: Map<string, number> = new Map();
   /**
    * Parse a scanned document ID into prefix and number
    * Examples: "PO-23" → {prefix: "PO", number: "23", fullId: "PO-23"}
@@ -265,7 +269,90 @@ class SalesforceObjectMappingService {
       }
     }
 
+    // Clear cache for this company after initialization
+    this.clearCacheForCompany(companyId);
+
     return results;
+  }
+
+  /**
+   * Centralized function to map scanned ID to Salesforce object
+   * This is the main function that should be used throughout the app
+   */
+  async mapScannedIdToObject(scannedId: string, companyId: string): Promise<{
+    objectApi: string;
+    nameField: string;
+    recordId: string;
+    prefix: string;
+  } | null> {
+    try {
+      // Parse the scanned ID
+      const parsed = this.parseDocumentId(scannedId);
+      
+      // Get cached mappings or fetch from database
+      const mappings = await this.getCachedMappings(companyId);
+      
+      // Find the mapping for this prefix
+      const mapping = mappings.find(m => m.prefix === parsed.prefix && m.is_active);
+      
+      if (!mapping) {
+        console.warn(`No mapping found for prefix ${parsed.prefix} in company ${companyId}`);
+        return null;
+      }
+      
+      return {
+        objectApi: mapping.salesforce_object,
+        nameField: mapping.name_field,
+        recordId: parsed.fullId,
+        prefix: parsed.prefix
+      };
+    } catch (error) {
+      console.error('Error mapping scanned ID to object:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get cached mappings or fetch from database
+   */
+  private async getCachedMappings(companyId: string): Promise<ObjectMapping[]> {
+    const cacheKey = `mappings_${companyId}`;
+    const cachedTime = this.cacheTimestamps.get(cacheKey);
+    const now = Date.now();
+    
+    // Check if cache is still valid
+    if (cachedTime && (now - cachedTime) < this.cacheExpiryTime) {
+      const cached = this.mappingCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+    
+    // Fetch from database
+    const mappings = await this.getCompanyObjectMappings(companyId);
+    
+    // Update cache
+    this.mappingCache.set(cacheKey, mappings);
+    this.cacheTimestamps.set(cacheKey, now);
+    
+    return mappings;
+  }
+
+  /**
+   * Clear cache for a specific company
+   */
+  clearCacheForCompany(companyId: string): void {
+    const cacheKey = `mappings_${companyId}`;
+    this.mappingCache.delete(cacheKey);
+    this.cacheTimestamps.delete(cacheKey);
+  }
+
+  /**
+   * Clear all cached mappings
+   */
+  clearAllCache(): void {
+    this.mappingCache.clear();
+    this.cacheTimestamps.clear();
   }
 }
 

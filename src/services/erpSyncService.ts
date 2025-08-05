@@ -8,6 +8,7 @@ import salesforceUploadService from './salesforceUploadService';
 import { pdfGenerationService } from './pdfGenerationService';
 import { PhotoData } from '../types/data';
 import { logAnalyticsEvent, logErrorToFile } from './analyticsService';
+import supabaseService from './supabaseService';
 
 export interface ErpSyncStatus {
   batchId: string;
@@ -196,6 +197,28 @@ export class ErpSyncService {
   }
 
   /**
+   * Check if batch has already been uploaded to ERP
+   */
+  async isBatchUploadedToErp(batchId: string): Promise<boolean> {
+    try {
+      const { data, error } = await supabaseService.supabase
+        .from('photo_batches')
+        .select('erp_uploaded')
+        .eq('id', batchId)
+        .single();
+
+      if (error || !data) {
+        return false;
+      }
+
+      return data.erp_uploaded === true;
+    } catch (error) {
+      console.error('[ErpSync] Error checking batch upload status:', error);
+      return false;
+    }
+  }
+
+  /**
    * Sync single batch to ERP
    */
   async syncBatchToErp(
@@ -205,6 +228,17 @@ export class ErpSyncService {
   ): Promise<BatchSyncResult> {
     try {
       console.log(`[ErpSync] Starting sync for batch ${batchId} to ${erpSystem}`);
+      
+      // Check if batch has already been uploaded to prevent duplicates
+      const isAlreadyUploaded = await this.isBatchUploadedToErp(batchId);
+      if (isAlreadyUploaded) {
+        console.log(`[ErpSync] Batch ${batchId} has already been uploaded to ERP`);
+        return {
+          batchId,
+          success: true,
+          message: 'Batch has already been uploaded to ERP'
+        };
+      }
       
       // Update status to syncing
       await this.updateBatchSyncStatus(batchId, erpSystem, 'syncing');
@@ -249,11 +283,36 @@ export class ErpSyncService {
       }
 
       if (uploadResult.success) {
-        // Update status to synced
+        // Update status to synced in local database
         await this.updateBatchSyncStatus(batchId, erpSystem, 'synced', {
           attachmentId: uploadResult.attachmentId,
           recordId: uploadResult.recordId
         });
+
+        // Update Supabase to mark batch as uploaded to ERP
+        try {
+          const { error } = await supabaseService.supabase
+            .from('photo_batches')
+            .update({
+              erp_uploaded: true,
+              erp_uploaded_at: new Date().toISOString(),
+              erp_uploaded_by: await supabaseService.getCurrentUserId(),
+              erp_record_ids: {
+                [erpSystem]: {
+                  recordId: uploadResult.recordId,
+                  attachmentId: uploadResult.attachmentId
+                }
+              },
+              erp_upload_error: null
+            })
+            .eq('id', batchId);
+
+          if (error) {
+            console.error('[ErpSync] Failed to update Supabase photo_batches:', error);
+          }
+        } catch (error) {
+          console.error('[ErpSync] Error updating Supabase:', error);
+        }
 
         // Log analytics
         logAnalyticsEvent('erp_sync_success', {
@@ -276,6 +335,23 @@ export class ErpSyncService {
           errorMessage: uploadResult.message,
           incrementRetry: true
         });
+
+        // Update Supabase to mark batch upload as failed
+        try {
+          const { error } = await supabaseService.supabase
+            .from('photo_batches')
+            .update({
+              erp_uploaded: false,
+              erp_upload_error: uploadResult.message
+            })
+            .eq('id', batchId);
+
+          if (error) {
+            console.error('[ErpSync] Failed to update Supabase photo_batches:', error);
+          }
+        } catch (error) {
+          console.error('[ErpSync] Error updating Supabase:', error);
+        }
 
         return {
           batchId,
@@ -374,28 +450,74 @@ export class ErpSyncService {
     try {
       const db = await databaseService.openDatabase();
       
-      // Get batch info
+      // Import compatibility helper
+      const { databaseCompatibility } = await import('../utils/databaseCompatibility');
+      
+      console.log('[ErpSync] Getting batch details for batch:', batchId);
+      
+      // Get batch info  
       const batch = await db.getFirstAsync(
         'SELECT * FROM photo_batches WHERE id = ?',
         [batchId]
       ) as any;
 
-      if (!batch) return null;
+      if (!batch) {
+        console.log('[ErpSync] No batch found with ID:', batchId);
+        return null;
+      }
 
-      // Get photos for batch
-      const photos = await db.getAllAsync(
-        'SELECT * FROM photos WHERE batch_id = ? ORDER BY created_at ASC',
-        [batchId]
-      ) as any[];
+      console.log('[ErpSync] Found batch:', {
+        id: batch.id,
+        referenceId: batch.referenceId || batch.orderNumber || batch.inventoryId,
+        hasReferenceId: !!(batch.referenceId || batch.orderNumber || batch.inventoryId)
+      });
+
+      // Get photos for batch using compatibility layer
+      let photos: any[] = [];
+      
+      try {
+        // First try with batchId (camelCase)
+        photos = await db.getAllAsync(
+          'SELECT * FROM photos WHERE batchId = ? ORDER BY id ASC',
+          [batchId]
+        ) as any[];
+        console.log('[ErpSync] Retrieved photos using batchId (camelCase):', photos.length);
+      } catch (camelCaseError) {
+        console.log('[ErpSync] CamelCase query failed, trying snake_case...', camelCaseError.message);
+        
+        try {
+          // Fallback to batch_id (snake_case)
+          photos = await db.getAllAsync(
+            'SELECT * FROM photos WHERE batch_id = ? ORDER BY id ASC',
+            [batchId]
+          ) as any[];
+          console.log('[ErpSync] Retrieved photos using batch_id (snake_case):', photos.length);
+        } catch (snakeCaseError) {
+          console.error('[ErpSync] Both camelCase and snake_case queries failed:', {
+            camelCaseError: camelCaseError.message,
+            snakeCaseError: snakeCaseError.message
+          });
+          
+          // Get schema information for debugging
+          const schema = await databaseCompatibility.getTableSchema(db, 'photos');
+          console.error('[ErpSync] Photos table schema:', schema);
+          
+          throw new Error(`No photos found for batch ${batchId}. Schema: ${JSON.stringify(schema)}`);
+        }
+      }
+
+      if (photos.length === 0) {
+        console.log('[ErpSync] No photos found for batch:', batchId);
+      }
 
       return {
         photos: photos.map(photo => ({
           id: photo.id,
-          uri: photo.file_path,
-          timestamp: photo.created_at,
-          batchId: photo.batch_id
+          uri: photo.uri || photo.file_path, // Support both column names
+          timestamp: photo.metadataJson ? JSON.parse(photo.metadataJson).timestamp : (photo.created_at || new Date().toISOString()),
+          batchId: photo.batchId || photo.batch_id // Support both column names
         })),
-        referenceId: batch.reference_id || batch.order_number || batch.inventory_id
+        referenceId: batch.referenceId || batch.orderNumber || batch.inventoryId
       };
     } catch (error) {
       console.error('[ErpSync] Failed to get batch details:', error);
@@ -404,4 +526,5 @@ export class ErpSyncService {
   }
 }
 
-export default new ErpSyncService();
+export const erpSyncService = new ErpSyncService();
+export default erpSyncService;

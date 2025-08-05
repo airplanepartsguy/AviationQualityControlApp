@@ -315,6 +315,15 @@ serve(async (req) => {
           // Add PKCE if available
           if (codeVerifier) {
             tokenRequestBody.append('code_verifier', codeVerifier)
+            
+            // ENHANCED DEBUG: Log PKCE validation details
+            console.log('🔍 PKCE CODE VERIFIER VALIDATION:', {
+              verifierLength: codeVerifier.length,
+              containsTilde: codeVerifier.includes('~'),
+              containsSpecialChars: /[^A-Za-z0-9\-_]/.test(codeVerifier),
+              verifierSample: codeVerifier.substring(0, 50) + '...',
+              isValidPKCE: codeVerifier.length >= 43 && codeVerifier.length <= 128 && /^[A-Za-z0-9\-_.~]+$/.test(codeVerifier)
+            })
           }
           
           console.log('🚀 Exchanging auth code for tokens...')
@@ -399,6 +408,36 @@ serve(async (req) => {
             instanceUrl: tokens.instance_url,
             tokenType: tokens.token_type
           })
+          
+          // Store tokens in oauth_tokens table for company-wide access
+          const tokenData = {
+            company_id: state,
+            integration_type: 'salesforce',
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            instance_url: tokens.instance_url || config.instance_url,
+            token_data: {
+              token_type: tokens.token_type,
+              expires_in: tokens.expires_in,
+              issued_at: new Date().toISOString(),
+              id_token: tokens.id_token,
+              signature: tokens.signature,
+              scope: tokens.scope
+            },
+            expires_at: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString()
+          }
+          
+          // First, try to insert/update in oauth_tokens table
+          const { error: tokenUpsertError } = await supabase
+            .from('oauth_tokens')
+            .upsert(tokenData, { onConflict: 'company_id,integration_type' })
+          
+          if (tokenUpsertError) {
+            console.error('Failed to store tokens in oauth_tokens table:', tokenUpsertError)
+            // Continue with the original flow even if this fails
+          } else {
+            console.log('✅ Tokens stored in oauth_tokens table for company-wide access')
+          }
           
           // Update company integration with tokens and set status to active
           const updatedConfig = {

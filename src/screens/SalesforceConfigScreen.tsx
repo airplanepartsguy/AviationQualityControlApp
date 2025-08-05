@@ -58,6 +58,7 @@ const SalesforceConfigScreen: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [hasExpiredTokens, setHasExpiredTokens] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>('Ready to configure');
 
   useEffect(() => {
@@ -81,11 +82,25 @@ const SalesforceConfigScreen: React.FC = () => {
         setConfig(salesforceIntegration.config as SalesforceConfig);
         
         const isActive = salesforceIntegration.status === 'active';
+        const hasTokens = !!(salesforceIntegration.config as SalesforceConfig).access_token;
+        const hasExpiredAuth = hasTokens && !isActive && salesforceIntegration.status === 'pending';
+        
         setIsAuthenticated(isActive);
-        setStatusMessage(isActive ? 'Connected and authenticated' : 'Configuration found but not authenticated');
-        setConnectionStatus(isActive ? 'success' : 'idle');
+        setHasExpiredTokens(hasExpiredAuth);
+        
+        if (isActive) {
+          setStatusMessage('Connected and authenticated');
+          setConnectionStatus('success');
+        } else if (hasExpiredAuth) {
+          setStatusMessage('Authentication expired - please re-authenticate');
+          setConnectionStatus('error');
+        } else {
+          setStatusMessage('Configuration found but not authenticated');
+          setConnectionStatus('idle');
+        }
       } else {
         setStatusMessage('No configuration found');
+        setHasExpiredTokens(false);
       }
     } catch (error) {
       console.error('[SalesforceConfig] Error loading configuration:', error);
@@ -139,7 +154,8 @@ const SalesforceConfigScreen: React.FC = () => {
   };
 
   const authenticateWithSalesforce = async () => {
-    if (connectionStatus !== 'success') {
+    // Allow authentication if connection test passed OR if we have expired tokens
+    if (connectionStatus !== 'success' && !hasExpiredTokens) {
       Alert.alert('Test Required', 'Please test your connection first before authenticating.');
       return;
     }
@@ -150,7 +166,8 @@ const SalesforceConfigScreen: React.FC = () => {
     }
 
     try {
-      setStatusMessage('Starting Salesforce authentication...');
+      const message = hasExpiredTokens ? 'Refreshing expired Salesforce authentication...' : 'Starting Salesforce authentication...';
+      setStatusMessage(message);
       
       const result = await salesforceOAuthService.initiateOAuthFlow(currentCompany.id, {
         clientId: config.client_id,
@@ -197,6 +214,8 @@ const SalesforceConfigScreen: React.FC = () => {
         const tokens = await salesforceOAuthService.getStoredTokens(currentCompany.id);
         if (tokens?.access_token) {
           setIsAuthenticated(true);
+          setHasExpiredTokens(false); // Clear expired tokens flag
+          setConnectionStatus('success'); // Update connection status
           setStatusMessage('Successfully authenticated with Salesforce');
           await saveConfiguration();
         } else {
@@ -377,6 +396,16 @@ const SalesforceConfigScreen: React.FC = () => {
               onPress={authenticateWithSalesforce}
               style={styles.button}
               variant="primary"
+            />
+          )}
+
+          {hasExpiredTokens && (
+            <CustomButton
+              title="Re-authenticate with Salesforce"
+              onPress={authenticateWithSalesforce}
+              style={styles.button}
+              variant="primary"
+              icon={<Ionicons name="refresh-outline" size={20} color="#FFF" />}
             />
           )}
 

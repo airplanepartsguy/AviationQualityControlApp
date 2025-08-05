@@ -45,8 +45,8 @@ class SalesforceOAuthService {
    * RFC 7636 compliant: [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
    */
   private generateCodeVerifier(): string {
-    // Use only RFC 7636 compliant characters (no periods to avoid issues)
-    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~';
+    // Use only the safest RFC 7636 compliant characters (no tilde ~ to avoid encoding issues)
+    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
     const length = 128; // Maximum length for better security
     let result = '';
     
@@ -506,94 +506,50 @@ class SalesforceOAuthService {
   }
 
   /**
-   * Refresh access token using refresh token
+   * Refresh access token using the edge function
    */
   async refreshAccessToken(companyId: string, refreshToken: string): Promise<SalesforceTokens | null> {
     try {
       console.log('[SalesforceOAuth] Refreshing access token for company:', companyId);
       
-      // Get company integration to get config
-      const integration = await supabaseService.getCompanyIntegration(companyId, 'salesforce');
-      if (!integration?.config) {
-        throw new Error('Company Salesforce configuration not found');
-      }
-
-      const config = integration.config as SalesforceOAuthConfig;
-      const baseUrl = config.sandbox 
-        ? 'https://test.salesforce.com' 
-        : 'https://login.salesforce.com';
-      
-      // CRITICAL FIX: OAuth should always use login.salesforce.com (or test.salesforce.com for sandbox)
-      // NOT the instance URL (like https://yourcompany.my.salesforce.com) which causes file download issues
-      console.log('[SalesforceOAuth] Using OAuth base URL:', baseUrl);
-      console.log('[SalesforceOAuth] Instance URL (for API calls):', config.instanceUrl);
-      
-      const tokenUrl = `${baseUrl}/services/oauth2/token`;
-      
-      const body = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        refresh_token: refreshToken
+      // Use the edge function to refresh the token
+      const { data, error } = await supabase.functions.invoke('refresh-salesforce-token', {
+        body: { company_id: companyId }
       });
 
-      // Add null check to prevent runtime error
-      if (!body) {
-        throw new Error('Failed to create request body for token refresh');
-      }
-
-      const response = await fetch(tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json'
-        },
-        body: body.toString()
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[SalesforceOAuth] Token refresh failed:', errorText);
+      if (error || !data?.success) {
+        console.error('[SalesforceOAuth] Token refresh failed:', error || data?.error);
         
         // ENHANCED: Update integration status and clear all OAuth artifacts when refresh fails
         console.log('[SalesforceOAuth] 🔄 Token refresh failed, cleaning up OAuth artifacts...');
         
-        // Clear stored tokens
-        await this.clearTokens(companyId);
+        // Clear from oauth_tokens table
+        await supabase
+          .from('oauth_tokens')
+          .delete()
+          .eq('company_id', companyId)
+          .eq('integration_type', 'salesforce');
         
-        // Update integration status to pending to trigger re-authentication
-        try {
-          const integration = await supabaseService.getCompanyIntegration(companyId, 'salesforce');
-          if (integration) {
-            await supabaseService.supabase
-              .from('company_integrations')
-              .update({ 
-                status: 'pending',
-                error_message: 'OAuth tokens expired and refresh failed. Re-authentication required.',
-                last_test_at: new Date().toISOString()
-              })
-              .eq('id', integration.id);
-            
-            console.log('[SalesforceOAuth] ✅ Integration status updated to pending for re-authentication');
-          }
-        } catch (statusError) {
-          console.warn('[SalesforceOAuth] Could not update integration status:', statusError);
-        }
+        // Clear local tokens
+        await this.clearTokens(companyId);
         
         return null;
       }
 
-      const newTokens: SalesforceTokens = await response.json();
+      // Convert response to SalesforceTokens format
+      const newTokens: SalesforceTokens = {
+        access_token: data.access_token,
+        refresh_token: refreshToken, // Keep the same refresh token
+        instance_url: data.instance_url,
+        token_type: 'Bearer',
+        issued_at: Date.now().toString(),
+        id: '',
+        signature: ''
+      };
       
-      // Preserve refresh token if not provided in response
-      if (!newTokens.refresh_token) {
-        newTokens.refresh_token = refreshToken;
-      }
-      
-      // Store new tokens
+      // Store updated tokens locally for immediate use
       await this.storeTokens(companyId, newTokens);
       
-      console.log('[SalesforceOAuth] Access token refreshed successfully');
       return newTokens;
     } catch (error) {
       console.error('[SalesforceOAuth] Error refreshing access token:', error);
@@ -779,27 +735,80 @@ class SalesforceOAuthService {
   }
 
   /**
-   * Get stored tokens
+   * Get stored tokens from database (company-wide access)
    */
   async getStoredTokens(companyId: string): Promise<SalesforceTokens | null> {
     try {
-      // Validate companyId to ensure it's a valid SecureStore key
+      // Validate companyId
       if (!companyId || typeof companyId !== 'string' || companyId.trim() === '') {
-        console.error('[SalesforceOAuth] Invalid company ID for SecureStore key:', companyId);
+        console.error('[SalesforceOAuth] Invalid company ID:', companyId);
         return null;
       }
       
-      // Clean the companyId to ensure it only contains valid characters for SecureStore
-      const cleanCompanyId = companyId.replace(/[^a-zA-Z0-9.\-_]/g, '');
-      if (cleanCompanyId !== companyId) {
-        console.warn('[SalesforceOAuth] Cleaned company ID from', companyId, 'to', cleanCompanyId);
+      console.log('[SalesforceOAuth] Getting tokens from database for company:', companyId);
+      
+      // First, try to get tokens from oauth_tokens table (new approach)
+      const { data: tokenData, error: tokenError } = await supabase
+        .from('oauth_tokens')
+        .select('*')
+        .eq('company_id', companyId)
+        .eq('integration_type', 'salesforce')
+        .single();
+      
+      if (!tokenError && tokenData) {
+        console.log('[SalesforceOAuth] Found tokens in oauth_tokens table');
+        
+        // Convert to SalesforceTokens format
+        return {
+          access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token,
+          instance_url: tokenData.instance_url,
+          token_type: tokenData.token_data?.token_type || 'Bearer',
+          issued_at: new Date(tokenData.token_data?.issued_at || tokenData.created_at).getTime().toString(),
+          id: tokenData.token_data?.id || '',
+          signature: tokenData.token_data?.signature || ''
+        };
       }
       
-      const key = `${this.SECURE_STORE_PREFIX}${cleanCompanyId}`;
-      console.log('[SalesforceOAuth] Getting tokens with key:', key);
+      // Fallback: Get from company_integrations table (backward compatibility)
+      const { data: integration, error: integrationError } = await supabase
+        .from('company_integrations')
+        .select('config')
+        .eq('company_id', companyId)
+        .eq('integration_type', 'salesforce')
+        .single();
       
-      const tokensJson = await SecureStore.getItemAsync(key);
-      return tokensJson ? JSON.parse(tokensJson) : null;
+      if (!integrationError && integration?.config?.access_token) {
+        console.log('[SalesforceOAuth] Found tokens in company_integrations table');
+        const config = integration.config;
+        
+        return {
+          access_token: config.access_token,
+          refresh_token: config.refresh_token,
+          instance_url: config.instance_url,
+          token_type: config.token_type || 'Bearer',
+          issued_at: config.token_received_at ? new Date(config.token_received_at).getTime().toString() : Date.now().toString(),
+          id: config.id || '',
+          signature: config.signature || ''
+        };
+      }
+      
+      // Final fallback: Try local SecureStore (for legacy support)
+      try {
+        const cleanCompanyId = companyId.replace(/[^a-zA-Z0-9.\-_]/g, '');
+        const key = `${this.SECURE_STORE_PREFIX}${cleanCompanyId}`;
+        const tokensJson = await SecureStore.getItemAsync(key);
+        
+        if (tokensJson) {
+          console.log('[SalesforceOAuth] Found tokens in SecureStore (legacy)');
+          return JSON.parse(tokensJson);
+        }
+      } catch (localError) {
+        console.log('[SalesforceOAuth] No tokens in SecureStore');
+      }
+      
+      console.log('[SalesforceOAuth] No tokens found for company:', companyId);
+      return null;
     } catch (error) {
       console.error('[SalesforceOAuth] Error getting stored tokens:', error);
       return null;

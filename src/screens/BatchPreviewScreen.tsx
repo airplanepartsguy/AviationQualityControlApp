@@ -25,7 +25,7 @@ import { logAnalyticsEvent, logErrorToFile } from '../services/analyticsService'
 import * as databaseService from '../services/databaseService';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
-import salesforceUploadService from '../services/salesforceUploadService';
+import erpSyncService from '../services/erpSyncService';
 import { pdfGenerationService } from '../services/pdfGenerationService';
 
 const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
@@ -263,16 +263,23 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
     setUploadStatus({ status: 'uploading', message: 'Preparing upload...' });
 
     try {
-      const result = await salesforceUploadService.uploadBatch({
-        batchId,
-        photos,
-        orderNumber: orderNumber || referenceId || `Batch-${batchId}`,
-        companyId: currentCompany?.id,
-      });
+      if (!currentCompany?.id) {
+        throw new Error('No company selected');
+      }
+
+      const result = await erpSyncService.syncBatchToErp(
+        batchId.toString(),
+        currentCompany.id,
+        'salesforce'
+      );
+
+      if (!result.success) {
+        throw new Error(result.message || 'Upload failed');
+      }
 
       setUploadStatus({
         status: 'success',
-        message: 'Successfully uploaded to Salesforce',
+        message: result.message || 'Successfully uploaded to Salesforce',
         scannedId: result.recordId,
       });
 
@@ -429,7 +436,7 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
             title="Add More Photos"
             onPress={handleAddMorePhotos}
             variant="outline"
-            icon="camera-outline"
+            icon={<Ionicons name="camera-outline" size={20} />}
             style={styles.actionButton}
           />
           
@@ -437,16 +444,16 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
             title="Generate PDF"
             onPress={handleGeneratePDF}
             variant="secondary"
-            icon="document-text-outline"
+            icon={<Ionicons name="document-text-outline" size={20} />}
             loading={isGeneratingPDF}
             style={styles.actionButton}
           />
           
           <CustomButton
-            title="Upload to Salesforce"
+            title="Upload to ERP"
             onPress={handleUploadToSalesforce}
             variant="primary"
-            icon="cloud-upload-outline"
+            icon={<Ionicons name="cloud-upload-outline" size={20} />}
             loading={isUploadingToSalesforce}
             style={styles.actionButton}
           />
@@ -463,11 +470,18 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.loadingContainer}>
           <Text style={styles.loadingText}>Error loading batch preview</Text>
-          <CustomButton 
-            title="Go Back" 
-            onPress={() => navigation.goBack()} 
-            variant="primary"
-          />
+          <TouchableOpacity 
+            style={{
+              backgroundColor: COLORS.primary,
+              paddingVertical: SPACING.md,
+              paddingHorizontal: SPACING.lg,
+              borderRadius: BORDER_RADIUS.medium,
+              marginTop: SPACING.md,
+            }}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.actionButtonText}>Go Back</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
@@ -584,6 +598,11 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     marginBottom: SPACING.sm,
+  },
+  actionButtonText: {
+    color: COLORS.white,
+    fontSize: FONTS.medium,
+    fontWeight: FONTS.bold,
   },
 });
 

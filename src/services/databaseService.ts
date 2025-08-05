@@ -479,6 +479,38 @@ const initializeAdditionalServices = async (): Promise<void> => {
     const { initializeBatchManagementTables } = await import('./batchManagementService');
     await initializeBatchManagementTables();
 
+    // Initialize ERP sync tables
+    try {
+      const { erpSyncService } = await import('./erpSyncService');
+      await erpSyncService.initializeSyncTables();
+      console.log('[databaseService] ERP sync tables initialized successfully');
+    } catch (erpSyncError) {
+      console.error('[databaseService] ERP sync table initialization failed:', erpSyncError);
+      // Create the table manually as fallback
+      try {
+        const db = await openDatabase();
+        await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS erp_sync_status (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            erp_system TEXT NOT NULL,
+            sync_status TEXT NOT NULL DEFAULT 'pending',
+            synced_at TEXT,
+            error_message TEXT,
+            attachment_id TEXT,
+            record_id TEXT,
+            retry_count INTEGER DEFAULT 0,
+            last_sync_attempt TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+        `);
+        console.log('[databaseService] ERP sync table created manually');
+      } catch (fallbackError) {
+        console.error('[databaseService] Manual ERP sync table creation failed:', fallbackError);
+      }
+    }
+
     // Initialize OAuth tables
     try {
       await initializeOAuthTables();
