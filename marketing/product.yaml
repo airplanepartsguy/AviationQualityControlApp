@@ -1,0 +1,50 @@
+product:
+  name: YourProduct
+  tagline: A clear one-sentence promise of value
+  description: A concise paragraph describing what the product does, for whom, and why it matters
+  value_props:
+    - title: Speed
+      detail: Deliver outcomes in minutes instead of hours
+    - title: Simplicity
+      detail: No setup, works out of the box
+    - title: ROI
+      detail: Clear, measurable impact within weeks
+  target_audience:
+    - name: Primary buyer
+      pains:
+        - The status quo is slow and manual
+        - Tools are fragmented and hard to integrate
+      gains:
+        - Faster time-to-value
+        - Lower total cost of ownership
+  use_cases:
+    - title: Core use case
+      description: Describe the before/after in 2–3 sentences
+  proof:
+    testimonials:
+      - quote: "We cut our time by 70%."
+        author: Jane Doe, Director of Ops
+    metrics:
+      - label: Time saved per week
+        value: 10+ hours
+  cta:
+    primary: Get started
+    url: https://example.com/signup
+  brand:
+    tone: pragmatic, friendly, direct
+    voice: clear, outcome-oriented
+    colors:
+      primary: "#0F62FE"
+      secondary: "#161616"
+    logo_path: assets/logo.png
+  launch_date: 2025-01-31
+urls:
+  website: https://example.com
+  signup: https://example.com/signup
+  docs: https://example.com/docs
+  pricing: https://example.com/pricing
+utm:
+  source: website
+  medium: marketing
+  campaign: launch
+  content: default

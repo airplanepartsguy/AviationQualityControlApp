@@ -1,0 +1,33 @@
+# Email 1 — Problem + Promise (Day 0)
+Subject: {{ product.name }} — {{ product.tagline }}
+
+Hi,
+
+If you're dealing with {{ product.target_audience[0].pains | first | default("slow, manual workflows") }}, {{ product.name }} helps. {{ product.description }}
+
+Get started: {{ product.cta.url | with_utm(utm, {"utm_content":"email1"}) }}
+
+# Email 2 — How it works + Social proof (Day 2)
+Subject: How {{ product.name }} works in 3 steps
+
+1) Describe step 1
+2) Describe step 2
+3) Describe step 3
+
+“{{ product.proof.testimonials[0].quote if product.proof.testimonials else "Insert testimonial" }}”
+
+Try it: {{ product.cta.url | with_utm(utm, {"utm_content":"email2"}) }}
+
+# Email 3 — Use case spotlight (Day 5)
+Subject: {{ product.use_cases[0].title if product.use_cases else "A top use case" }}
+
+{{ product.use_cases[0].description if product.use_cases else "Describe the before/after" }}
+
+See more: {{ urls.website | with_utm(utm, {"utm_content":"email3"}) }}
+
+# Email 4 — Offer + Urgency (Day 10)
+Subject: Last chance to try {{ product.name }}
+
+Quick reminder—{{ product.tagline.lower() }}. Reply with questions, or start now:
+
+{{ product.cta.url | with_utm(utm, {"utm_content":"email4"}) }}

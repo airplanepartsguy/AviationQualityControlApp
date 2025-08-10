@@ -1,0 +1,28 @@
+# {{ product.name }}
+
+> {{ product.tagline }}
+
+## Problem
+{{ product.target_audience[0].pains | default(["State the top pains your audience faces"]) | join("; ") }}.
+
+## Solution
+{{ product.description }}
+
+## Key benefits
+{% for vp in product.value_props %}- {{ vp.title }}: {{ vp.detail }}
+{% endfor %}
+
+## How it works
+- Use case: {{ product.use_cases[0].title if product.use_cases else "Primary use case" }}
+- Workflow: Describe the 3–4 key steps
+
+## Proof
+{% if product.proof.testimonials %}
+> "{{ product.proof.testimonials[0].quote }}" — {{ product.proof.testimonials[0].author }}
+{% endif %}
+{% if product.proof.metrics %}
+- {{ product.proof.metrics[0].label }}: {{ product.proof.metrics[0].value }}
+{% endif %}
+
+## Call to action
+- {{ product.cta.primary }}: {{ product.cta.url | with_utm(utm) }}

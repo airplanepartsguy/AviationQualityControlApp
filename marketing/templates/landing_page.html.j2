@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ product.name }} — {{ product.tagline }}</title>
+  <style>
+    :root {
+      --primary: {{ product.brand.colors.primary }};
+      --secondary: {{ product.brand.colors.secondary }};
+    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif; margin:0; color:#111; }
+    header { background: var(--secondary); color: #fff; padding: 56px 24px; }
+    header .inner { max-width: 960px; margin: 0 auto; }
+    .logo { display:flex; align-items:center; gap:12px; }
+    .logo img { height: 32px; width: auto; }
+    .cta { display:inline-block; background: var(--primary); color:#fff; text-decoration:none; padding:12px 18px; border-radius:8px; font-weight:600; }
+    main { max-width: 960px; margin: 32px auto; padding: 0 24px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap:16px; }
+    .card { border:1px solid #eee; border-radius:12px; padding:16px; }
+    footer { color:#666; font-size: 14px; text-align:center; padding: 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="inner">
+      <div class="logo">
+        {% if product.brand.logo_path %}
+          <img src="{{ product.brand.logo_path }}" alt="{{ product.name }} logo">
+        {% endif %}
+        <strong>{{ product.name }}</strong>
+      </div>
+      <h1>{{ product.tagline }}</h1>
+      <p style="max-width: 640px;">{{ product.description }}</p>
+      <p><a class="cta" href="{{ product.cta.url | with_utm(utm) }}">{{ product.cta.primary }}</a></p>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Why {{ product.name }}</h2>
+      <div class="grid">
+        {% for vp in product.value_props %}
+        <div class="card">
+          <h3>{{ vp.title }}</h3>
+          <p>{{ vp.detail }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Use cases</h2>
+      <div class="grid">
+        {% for uc in product.use_cases %}
+        <div class="card">
+          <h3>{{ uc.title }}</h3>
+          <p>{{ uc.description }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Proof</h2>
+      {% if product.proof.testimonials %}
+        <blockquote>“{{ product.proof.testimonials[0].quote }}” — {{ product.proof.testimonials[0].author }}</blockquote>
+      {% endif %}
+      {% if product.proof.metrics %}
+        <p><strong>{{ product.proof.metrics[0].label }}:</strong> {{ product.proof.metrics[0].value }}</p>
+      {% endif %}
+    </section>
+
+    <section>
+      <p><a class="cta" href="{{ product.cta.url | with_utm(utm) }}">{{ product.cta.primary }}</a></p>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; {{ product.launch_date | year or "2025" }} {{ product.name }}</p>
+  </footer>
+</body>
+</html>

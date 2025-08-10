@@ -1,0 +1,20 @@
+FOR IMMEDIATE RELEASE
+
+{{ product.name }} Launches — {{ product.tagline }}
+
+[City], [Date] — {{ product.description }}
+
+Key benefits include:
+{% for vp in product.value_props %}- {{ vp.title }}: {{ vp.detail }}
+{% endfor %}
+
+Quotes:
+{% if product.proof.testimonials %}- "{{ product.proof.testimonials[0].quote }}" — {{ product.proof.testimonials[0].author }}
+{% else %}- "Insert executive quote here" — CEO, {{ product.name }}
+{% endif %}
+
+Availability: {{ product.launch_date }}
+
+Call to action: {{ product.cta.primary }} — {{ product.cta.url | with_utm(utm, {"utm_content":"pr"}) }}
+
+Media contact: [Name], [Email], [Phone]
