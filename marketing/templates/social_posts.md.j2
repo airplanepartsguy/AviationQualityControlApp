@@ -1,0 +1,19 @@
+# Twitter/X
+{% for vp in product.value_props %}
+- {{ product.name }}: {{ vp.title }} — {{ vp.detail }} {{ product.cta.url | with_utm(utm, {"utm_content":"tw{{ loop.index }}"}) }}
+{% endfor %}
+
+# LinkedIn
+Introducing {{ product.name }} — {{ product.tagline }}
+
+{{ product.description }}
+
+Top benefits:
+{% for vp in product.value_props %}- {{ vp.title }}: {{ vp.detail }}
+{% endfor %}
+
+Use cases:
+{% for uc in product.use_cases %}- {{ uc.title }} — {{ uc.description }}
+{% endfor %}
+
+Get started: {{ product.cta.url | with_utm(utm, {"utm_content":"li"}) }}

@@ -1,0 +1,28 @@
+name: Build marketing assets
+
+on:
+  push:
+    paths:
+      - 'marketing/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r marketing/requirements.txt
+      - name: Generate assets
+        run: |
+          python marketing/generator.py --product marketing/product.yaml --templates marketing/templates --out marketing/dist
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketing-dist
+          path: marketing/dist
