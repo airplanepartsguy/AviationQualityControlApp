@@ -27,6 +27,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import erpSyncService from '../services/erpSyncService';
 import { pdfGenerationService } from '../services/pdfGenerationService';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
 
 const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
   // Extract the batchId from route params
@@ -238,12 +240,53 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
 
     setIsGeneratingPDF(true);
     try {
-      await pdfGenerationService.generateBatchPDF(batchId, photos, {
-        orderNumber,
-        companyName: currentCompany?.name,
-      });
-      Alert.alert('Success', 'PDF report generated successfully!');
-      logAnalyticsEvent('pdf_generated', { batchId, photoCount: photos.length });
+      // Use the correct method name and signature
+      const result = await pdfGenerationService.generatePdfFromPhotos(
+        photos,
+        referenceId || orderNumber || batchId.toString(), // Use referenceId as scannedId
+        {
+          title: `${orderNumber ? `Order ${orderNumber}` : `Batch ${batchId}`} - ${currentCompany?.name || 'Quality Report'}`,
+          includeMetadata: true,
+        }
+      );
+
+      if (result.success && result.pdfUri) {
+        // Generate a proper filename
+        const fileName = `${orderNumber || `Batch_${batchId}`}_${currentCompany?.name || 'Report'}_${new Date().toISOString().split('T')[0]}.pdf`;
+        
+        // Show options to share the PDF
+        Alert.alert(
+          'PDF Generated Successfully! 📄',
+          `Report created with ${result.photoCount} photos.\n\nWhat would you like to do?`,
+          [
+            {
+              text: 'Share PDF',
+              onPress: () => sharePDF(result.pdfUri!, fileName),
+              style: 'default',
+            },
+            {
+              text: 'Save & Share',
+              onPress: () => saveAndSharePDF(result.pdfUri!, fileName),
+              style: 'default',
+            },
+            {
+              text: 'Done',
+              style: 'cancel',
+            },
+          ],
+          { cancelable: true }
+        );
+
+        logAnalyticsEvent('pdf_generated', { 
+          batchId, 
+          photoCount: result.photoCount,
+          orderNumber,
+          referenceId 
+        });
+      } else {
+        Alert.alert('Error', result.error || 'Failed to generate PDF report.');
+        logErrorToFile('pdf_generation_error', new Error(result.error || 'Unknown PDF generation error'));
+      }
     } catch (error) {
       console.error('[BatchPreview] PDF generation error:', error);
       Alert.alert('Error', 'Failed to generate PDF report.');
@@ -251,7 +294,80 @@ const BatchPreviewScreen = ({ navigation, route }: BatchPreviewScreenProps) => {
     } finally {
       setIsGeneratingPDF(false);
     }
-  }, [photos, batchId, orderNumber, currentCompany]);
+  }, [photos, batchId, orderNumber, referenceId, currentCompany]);
+
+  // Helper function to share PDF directly
+  const sharePDF = useCallback(async (pdfUri: string, fileName: string) => {
+    try {
+      console.log('[BatchPreview] Sharing PDF:', fileName);
+      
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(pdfUri, {
+          UTI: 'com.adobe.pdf',
+          mimeType: 'application/pdf',
+          dialogTitle: fileName
+        });
+        
+        logAnalyticsEvent('pdf_shared', { 
+          batchId, 
+          fileName, 
+          shareMethod: 'direct' 
+        });
+      } else {
+        Alert.alert('Sharing Not Available', 'Sharing is not available on this device.');
+      }
+    } catch (error) {
+      console.error('[BatchPreview] Error sharing PDF:', error);
+      Alert.alert('Error', 'Failed to share PDF. Please try again.');
+    }
+  }, [batchId]);
+
+  // Helper function to save PDF with custom name and then share
+  const saveAndSharePDF = useCallback(async (pdfUri: string, fileName: string) => {
+    try {
+      console.log('[BatchPreview] Saving and sharing PDF:', fileName);
+      
+      // Create a temp directory for the renamed file
+      const tempDir = `${FileSystem.cacheDirectory}pdf_temp/`;
+      await FileSystem.makeDirectoryAsync(tempDir, { intermediates: true });
+      
+      // Copy PDF to temp location with proper filename
+      const tempPath = `${tempDir}${fileName}`;
+      await FileSystem.copyAsync({
+        from: pdfUri,
+        to: tempPath
+      });
+      
+      // Share the renamed file
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(tempPath, {
+          UTI: 'com.adobe.pdf',
+          mimeType: 'application/pdf',
+          dialogTitle: fileName
+        });
+        
+        logAnalyticsEvent('pdf_shared', { 
+          batchId, 
+          fileName, 
+          shareMethod: 'saved_and_shared' 
+        });
+      }
+      
+      // Clean up temp file after a delay
+      setTimeout(async () => {
+        try {
+          await FileSystem.deleteAsync(tempDir, { idempotent: true });
+          console.log('[BatchPreview] Cleaned up temp PDF file');
+        } catch (cleanupError) {
+          console.warn('[BatchPreview] Error cleaning up temp file:', cleanupError);
+        }
+      }, 10000);
+      
+    } catch (error) {
+      console.error('[BatchPreview] Error saving and sharing PDF:', error);
+      Alert.alert('Error', 'Failed to save and share PDF. Please try again.');
+    }
+  }, [batchId]);
 
   const handleUploadToSalesforce = useCallback(async () => {
     if (photos.length === 0) {

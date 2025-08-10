@@ -485,20 +485,33 @@ class SalesforceOAuthService {
         return null;
       }
 
-      // Check if token is still valid (Salesforce tokens typically last 2 hours)
+      // Check if token is still valid (Salesforce tokens typically last 12-24 hours)
       const issuedAt = parseInt(tokens.issued_at);
       const now = Date.now();
       const tokenAge = now - issuedAt;
-      const twoHours = 2 * 60 * 60 * 1000;
+      const twelveHours = 12 * 60 * 60 * 1000; // Much more reasonable expiration
 
-      if (tokenAge < twoHours) {
+      if (tokenAge < twelveHours) {
+        console.log(`[SalesforceOAuth] Token still valid, age: ${Math.round(tokenAge / (1000 * 60))} minutes`);
         return tokens.access_token;
       }
 
-      // Refresh token if expired
-      console.log('[SalesforceOAuth] Access token expired, refreshing...');
-      const refreshedTokens = await this.refreshAccessToken(companyId, tokens.refresh_token);
-      return refreshedTokens?.access_token || null;
+      // Refresh token if expired - this should happen automatically without user intervention
+      if (tokens.refresh_token) {
+        console.log('[SalesforceOAuth] Access token expired, automatically refreshing with refresh token...');
+        const refreshedTokens = await this.refreshAccessToken(companyId, tokens.refresh_token);
+        
+        if (refreshedTokens?.access_token) {
+          console.log('[SalesforceOAuth] ✅ Automatic token refresh successful');
+          return refreshedTokens.access_token;
+        } else {
+          console.log('[SalesforceOAuth] ❌ Automatic token refresh failed - user needs to re-authenticate');
+          return null;
+        }
+      } else {
+        console.log('[SalesforceOAuth] Access token expired and no refresh token available');
+        return null;
+      }
     } catch (error) {
       console.error('[SalesforceOAuth] Error getting valid access token:', error);
       return null;

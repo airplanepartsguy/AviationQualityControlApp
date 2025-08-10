@@ -453,25 +453,46 @@ class CompanyIntegrationsService {
         if (tokens && tokens.access_token) {
           console.log('[CompanyIntegrations] Found OAuth tokens in SecureStore for company:', companyId);
           
-          // Check if SecureStore tokens are expired
-          if (tokens.issued_at) {
-            const issuedAt = parseInt(tokens.issued_at);
-            const now = Date.now();
-            const tokenAge = now - issuedAt;
-            const twoHours = 2 * 60 * 60 * 1000;
-            
-            console.log(`[CompanyIntegrations] SecureStore token age check:`, {
-              issuedAt: new Date(issuedAt).toISOString(),
-              now: new Date(now).toISOString(),
-              ageMinutes: Math.round(tokenAge / (1000 * 60)),
-              isExpired: tokenAge >= twoHours
-            });
-            
-            if (tokenAge >= twoHours) {
-              console.log('[CompanyIntegrations] SecureStore tokens are expired');
-              return null;
+                      // Check if SecureStore tokens need refreshing
+            if (tokens.issued_at) {
+              const issuedAt = parseInt(tokens.issued_at);
+              const now = Date.now();
+              const tokenAge = now - issuedAt;
+              const twelveHours = 12 * 60 * 60 * 1000;
+              
+              console.log(`[CompanyIntegrations] SecureStore token age check:`, {
+                issuedAt: new Date(issuedAt).toISOString(),
+                now: new Date(now).toISOString(),
+                ageMinutes: Math.round(tokenAge / (1000 * 60)),
+                ageHours: Math.round(tokenAge / (1000 * 60 * 60)),
+                needsRefresh: tokenAge >= twelveHours,
+                hasRefreshToken: !!tokens.refresh_token
+              });
+              
+              if (tokenAge >= twelveHours && tokens.refresh_token) {
+                console.log('[CompanyIntegrations] Access token expired, attempting automatic refresh...');
+                
+                try {
+                  // Try to refresh the token automatically
+                  const { salesforceOAuthService } = await import('./salesforceOAuthService');
+                  const refreshedTokens = await salesforceOAuthService.refreshAccessToken(companyId, tokens.refresh_token);
+                  
+                  if (refreshedTokens?.access_token) {
+                    console.log('[CompanyIntegrations] ✅ Token refresh successful, using new tokens');
+                    return refreshedTokens;
+                  } else {
+                    console.log('[CompanyIntegrations] ❌ Token refresh failed, user needs to re-authenticate');
+                    return null;
+                  }
+                } catch (refreshError) {
+                  console.error('[CompanyIntegrations] Error during automatic token refresh:', refreshError);
+                  return null;
+                }
+              } else if (tokenAge >= twelveHours && !tokens.refresh_token) {
+                console.log('[CompanyIntegrations] Access token expired and no refresh token available');
+                return null;
+              }
             }
-          }
           
           console.log('[CompanyIntegrations] ✅ Returning valid SecureStore tokens');
           return tokens;

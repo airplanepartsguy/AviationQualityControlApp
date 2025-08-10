@@ -162,29 +162,15 @@ class PdfGenerationService {
           .image {
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            object-fit: contain;
             display: block;
           }
-          .header {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            right: 10px;
-            background-color: rgba(255, 255, 255, 0.9);
-            padding: 10px;
-            text-align: center;
-            font-family: Arial, sans-serif;
-            font-size: 14px;
-            font-weight: bold;
-            border-radius: 5px;
-            z-index: 10;
-          }
+          /* Overlay styles removed for clean PDFs */
         </style>
       </head>
       <body>
         ${photoBase64Array.map((dataUrl, index) => `
           <div class="page">
-            <div class="header">${title} - Page ${index + 1} of ${photoBase64Array.length}</div>
             <div class="image-container">
               <img class="image" src="${dataUrl}" alt="Photo ${index + 1}" />
             </div>
